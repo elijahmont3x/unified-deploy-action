@@ -70,82 +70,30 @@ plugin_pg_backup() {
   mkdir -p "${PG_BACKUP_DIR}"
   
   # Check if pg_dump is available
-  if command -v pg_dump &>/dev/null; then
-    uds_log "Using system pg_dump for backup" "debug"
+  if ! command -v pg_dump &>/dev/null; then
+    uds_log "pg_dump command not found. Installing..." "warning"
     
-    # Perform the backup using host pg_dump
-    PGPASSWORD="${PG_PASSWORD}" pg_dump -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" \
-      -d "${PG_DATABASE}" -f "${backup_file}" 2>/tmp/pg_backup_error
-    
-    if [ $? -ne 0 ]; then
-      uds_log "Database backup failed: $(cat /tmp/pg_backup_error)" "error"
-      rm -f /tmp/pg_backup_error
-      
-      # Try to find a PostgreSQL container as fallback
-      uds_log "Trying to use database container as fallback" "info"
-      plugin_pg_backup_using_container "$backup_file"
-      return $?
+    # Try to install PostgreSQL client
+    if command -v apt-get &>/dev/null; then
+      apt-get update && apt-get install -y postgresql-client
+    elif command -v yum &>/dev/null; then
+      yum install -y postgresql
+    elif command -v apk &>/dev/null; then
+      apk add --no-cache postgresql-client
+    else
+      uds_log "Could not install PostgreSQL client. Backup failed." "error"
+      return 1
     fi
-    
-    rm -f /tmp/pg_backup_error
-  else
-    uds_log "pg_dump command not found, trying to use database container" "warning"
-    plugin_pg_backup_using_container "$backup_file"
-    return $?
   fi
+  
+  # Perform the backup
+  PGPASSWORD="${PG_PASSWORD}" pg_dump -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" \
+    -d "${PG_DATABASE}" -f "${backup_file}" || {
+      uds_log "Database backup failed" "error"
+      return 1
+    }
   
   uds_log "Database backup completed successfully" "success"
-  return 0
-}
-
-# Backup using Docker container
-plugin_pg_backup_using_container() {
-  local backup_file="$1"
-  local db_container=""
-  
-  # Try to find a database container
-  db_container=$(docker ps --format "{{.Names}}" | grep -E "(postgres|pg)" | head -n 1)
-  
-  if [ -n "$db_container" ]; then
-    uds_log "Found PostgreSQL container: $db_container" "info"
-    
-    # Check if container has pg_dump
-    if docker exec "$db_container" which pg_dump &>/dev/null; then
-      uds_log "Using container pg_dump for backup" "debug"
-      
-      # Run pg_dump in the container
-      docker exec -e PGPASSWORD="${PG_PASSWORD}" "$db_container" \
-        pg_dump -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DATABASE}" \
-        > "${backup_file}" 2>/tmp/pg_backup_error
-      
-      if [ $? -ne 0 ]; then
-        uds_log "Database backup via container failed: $(cat /tmp/pg_backup_error)" "error"
-        rm -f /tmp/pg_backup_error
-        return 1
-      fi
-      
-      rm -f /tmp/pg_backup_error
-      uds_log "Database backup via container completed successfully" "success"
-      return 0
-    else
-      uds_log "Container doesn't have pg_dump available" "warning"
-    fi
-  fi
-  
-  # Last resort - try to use a postgresql image temporarily
-  uds_log "Using temporary postgres image for backup" "info"
-  docker run --rm -e PGPASSWORD="${PG_PASSWORD}" -v "${PG_BACKUP_DIR}:/backup" \
-    postgres:latest pg_dump -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" \
-    -d "${PG_DATABASE}" -f "/backup/$(basename "${backup_file}")" 2>/tmp/pg_backup_error
-  
-  if [ $? -ne 0 ]; then
-    uds_log "Database backup via temporary container failed: $(cat /tmp/pg_backup_error)" "error"
-    rm -f /tmp/pg_backup_error
-    return 1
-  fi
-  
-  rm -f /tmp/pg_backup_error
-  uds_log "Database backup via temporary container completed successfully" "success"
   return 0
 }
 

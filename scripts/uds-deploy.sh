@@ -10,6 +10,11 @@ set -eo pipefail
 UDS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$UDS_SCRIPT_DIR/uds-core.sh"
 
+# Load health check module if not already loaded
+if ! type uds_check_health &>/dev/null && [ -f "${UDS_SCRIPT_DIR}/uds-health.sh" ]; then
+  source "${UDS_SCRIPT_DIR}/uds-health.sh"
+fi
+
 # Display help information
 uds_show_help() {
   cat << EOL
@@ -142,123 +147,6 @@ uds_prepare_deployment() {
   uds_create_nginx_config "$APP_NAME" "$DOMAIN" "$ROUTE_TYPE" "$ROUTE" "$PORT" "$SSL"
   
   uds_log "Deployment preparation completed" "success"
-}
-
-# Check health of a deployed application
-uds_check_health() {
-  local app_name="$1"
-  local port="$2"
-  local health_endpoint="${3:-/health}"
-  local timeout="${4:-60}"
-  local health_type="${5:-http}" # http, tcp, container, command
-  local container_name="${6:-}"
-  local health_command="${7:-}"
-  
-  # Skip health check if explicitly disabled
-  if [ "$health_endpoint" = "none" ] || [ "$health_endpoint" = "disabled" ]; then
-    uds_log "Health check disabled for $app_name" "info"
-    return 0
-  fi
-  
-  uds_log "Checking health of $app_name using $health_type check" "info"
-  
-  # Improved container discovery for container health checks
-  if [ "$health_type" = "container" ]; then
-    if [ -z "$container_name" ]; then
-      # Dynamically find the most likely container for this application
-      container_name=$(docker ps --format "{{.Names}}" | grep "${app_name}" | head -n 1)
-      
-      if [ -z "$container_name" ]; then
-        uds_log "No container found for $app_name, health check failed" "error"
-        return 1
-      fi
-      
-      uds_log "Automatically selected container: $container_name" "debug"
-    fi
-  fi
-  
-  local start_time=$(date +%s)
-  local end_time=$((start_time + timeout))
-  local current_time=$start_time
-  
-  while [ $current_time -lt $end_time ]; do
-    # Attempt health check based on type
-    case "$health_type" in
-      http)
-        # HTTP-based health check
-        uds_log "HTTP health check: http://localhost:${port}${health_endpoint}" "debug"
-        if curl -s -f -m 5 "http://localhost:${port}${health_endpoint}" &> /dev/null; then
-          uds_log "HTTP health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-      
-      tcp)
-        # TCP-based health check (just check if port is open)
-        uds_log "TCP health check: port ${port}" "debug"
-        if uds_is_port_available "$port" 5; then
-          uds_log "TCP port ${port} is not available (in use), which means service is running" "success"
-          return 0
-        fi
-        ;;
-      
-      container)
-        # Container-based health check (check if container is running)
-        uds_log "Container health check: $container_name" "debug"
-        if docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
-          # If container has a health check, also verify that
-          local health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null)
-          
-          if [ "$health_status" = "healthy" ]; then
-            uds_log "Container health check passed for $app_name (container reports healthy)" "success"
-            return 0
-          elif [ "$health_status" = "none" ] || [ -z "$health_status" ]; then
-            # Container has no health check, so running is good enough
-            uds_log "Container health check passed for $app_name (no HEALTHCHECK defined)" "success"
-            return 0
-          else
-            uds_log "Container is running but health status is: $health_status" "warning"
-          fi
-        else
-          uds_log "Container $container_name is not running" "error"
-        fi
-        ;;
-      
-      command)
-        # Command-based health check
-        if [ -z "$health_command" ]; then
-          uds_log "No health command specified" "error"
-          return 1
-        fi
-        
-        uds_log "Command health check: $health_command" "debug"
-        if eval "$health_command"; then
-          uds_log "Command health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-      
-      *)
-        # Fallback to HTTP health check
-        uds_log "Unknown health check type: $health_type, falling back to HTTP" "warning"
-        if curl -s -f -m 5 "http://localhost:${port}${health_endpoint}" &> /dev/null; then
-          uds_log "Fallback HTTP health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-    esac
-    
-    # Wait and try again
-    sleep 5
-    current_time=$(date +%s)
-    
-    # Calculate remaining time
-    local remaining=$((end_time - current_time))
-    uds_log "Health check pending... ${remaining}s remaining" "debug"
-  done
-  
-  uds_log "Health check failed for $app_name after ${timeout}s" "error"
-  return 1
 }
 
 # Deploy the application

@@ -10,6 +10,34 @@ set -eo pipefail
 UDS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$UDS_SCRIPT_DIR/uds-core.sh"
 
+# Ensure UDS is installed
+setup_uds() {
+  local uds_repo="https://github.com/your-org/unified-deployment-system.git"
+  local uds_version="v1.0.0" # Replace with the desired tag or commit hash
+
+  if [ ! -f "./uds-core.sh" ]; then
+    uds_log "Installing Unified Deployment System..." "info"
+
+    # Clone the repository
+    git clone --branch "$uds_version" "$uds_repo" ./uds-temp
+
+    # Copy the necessary files
+    cp -r ./uds-temp/scripts/* ./
+    cp -r ./uds-temp/plugins ./
+
+    # Clean up
+    rm -rf ./uds-temp
+
+    # Make scripts executable
+    chmod +x ./*.sh
+    
+    uds_log "UDS installed successfully" "success"
+  fi
+}
+
+# Call the setup function
+setup_uds
+
 # Display help information
 uds_show_help() {
   cat << EOL

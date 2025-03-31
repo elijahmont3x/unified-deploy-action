@@ -143,7 +143,8 @@ runs:
           "extra_hosts": "${{ inputs.extra-hosts }}",
           "health_check": "${{ inputs.health-check }}",
           "health_check_timeout": ${{ inputs.health-check-timeout }},
-          "plugins": "${{ inputs.plugins }}"
+          "plugins": "${{ inputs.plugins }}",
+          "auto_install_deps": true
         }
         EOF
 
@@ -155,22 +156,7 @@ runs:
         key: ${{ inputs.ssh-key }}
         script_stop: true
         script: |
-          set -e  # Exit immediately if a command exits with a non-zero status
-          
-          # Create temporary log file for capturing output
-          LOG_FILE=$(mktemp)
-          
-          # Function to handle errors with improved reporting
-          handle_error() {
-            echo "::error::Deployment failed with exit code $1"
-            echo "::group::Error Logs"
-            tail -n 50 $LOG_FILE | sed 's/\x1b\[[0-9;]*m//g'  # Remove ANSI color codes
-            echo "::endgroup::"
-            exit 1
-          }
-          
-          # Redirect all output to log file and terminal
-          exec > >(tee -a $LOG_FILE) 2>&1
+          set -e
           
           echo "Setting up deployment environment..."
           mkdir -p ${{ inputs.working-dir }}/${{ inputs.app-name }}
@@ -180,7 +166,10 @@ runs:
           if [ ! -f "./uds-core.sh" ]; then
             echo "Installing Unified Deployment System..."
             # Clone the UDS repository
-            git clone https://github.com/your-org/unified-deployment-system.git ./uds-temp || handle_error $?
+            git clone https://github.com/your-org/unified-deployment-system.git ./uds-temp || {
+              echo "Failed to clone UDS repository"
+              exit 1
+            }
             cp -r ./uds-temp/scripts/* ./
             cp -r ./uds-temp/plugins ./
             rm -rf ./uds-temp
@@ -192,16 +181,13 @@ runs:
           ${{ github.action_path }}/config.json
           EOF
           
-          # Run the appropriate command with error handling
+          # Run the appropriate command
           echo "Running ${{ inputs.command }} command..."
           if [ "${{ inputs.command }}" == "setup" ]; then
-            ./uds-setup.sh --config ${{ inputs.app-name }}-config.json || handle_error $?
+            ./uds-setup.sh --config ${{ inputs.app-name }}-config.json
           elif [ "${{ inputs.command }}" == "cleanup" ]; then
-            ./uds-cleanup.sh --config ${{ inputs.app-name }}-config.json || handle_error $?
+            ./uds-cleanup.sh --config ${{ inputs.app-name }}-config.json
           else
             # Default is deploy
-            ./uds-deploy.sh --config ${{ inputs.app-name }}-config.json || handle_error $?
+            ./uds-deploy.sh --config ${{ inputs.app-name }}-config.json
           fi
-          
-          echo "Command completed successfully"
-          rm -f $LOG_FILE

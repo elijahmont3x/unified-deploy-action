@@ -15,6 +15,7 @@ UDS_LOGS_DIR="${UDS_BASE_DIR}/logs"
 UDS_CERTS_DIR="${UDS_BASE_DIR}/certs"
 UDS_NGINX_DIR="${UDS_BASE_DIR}/nginx"
 UDS_REGISTRY_FILE="${UDS_BASE_DIR}/service-registry.json"
+UDS_SCRIPT_DIR="${UDS_BASE_DIR}/scripts"
 
 # Core environmental variables
 UDS_TIME_ZONE="${TZ:-UTC}"
@@ -65,6 +66,11 @@ uds_init() {
     echo '{"services":{}}' > "${UDS_REGISTRY_FILE}"
   fi
 
+  # Load health check module
+  if [ -f "${UDS_SCRIPT_DIR}/uds-health.sh" ]; then
+    source "${UDS_SCRIPT_DIR}/uds-health.sh"
+  fi
+
   # Discover and register plugins
   uds_discover_plugins
 
@@ -72,7 +78,7 @@ uds_init() {
   uds_check_requirements
 }
 
-# Check for required tools
+# Check for required tools and install missing ones if possible
 uds_check_requirements() {
   # Check for essential commands
   local REQUIRED_COMMANDS=("docker" "curl" "jq" "openssl")
@@ -85,9 +91,45 @@ uds_check_requirements() {
   done
 
   if [ ${#MISSING_COMMANDS[@]} -gt 0 ]; then
-    uds_log "Missing required commands: ${MISSING_COMMANDS[*]}" "error"
-    uds_log "Please install these tools before continuing." "error"
-    return 1
+    uds_log "Missing required commands: ${MISSING_COMMANDS[*]}" "warning"
+    
+    # Try to install missing dependencies
+    if [ "${AUTO_INSTALL_DEPS:-true}" = "true" ]; then
+      uds_log "Attempting to install missing dependencies..." "info"
+      
+      # Check for package manager
+      if command -v apt-get &> /dev/null; then
+        apt-get update && apt-get install -y ${MISSING_COMMANDS[@]}
+      elif command -v yum &> /dev/null; then
+        yum install -y ${MISSING_COMMANDS[@]}
+      elif command -v dnf &> /dev/null; then
+        dnf install -y ${MISSING_COMMANDS[@]}
+      elif command -v apk &> /dev/null; then
+        apk add --no-cache ${MISSING_COMMANDS[@]}
+      else
+        uds_log "Couldn't detect package manager. Please install dependencies manually:" "error"
+        uds_log "${MISSING_COMMANDS[*]}" "error"
+        return 1
+      fi
+      
+      # Verify installation
+      local STILL_MISSING=()
+      for cmd in "${MISSING_COMMANDS[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+          STILL_MISSING+=("$cmd")
+        fi
+      done
+      
+      if [ ${#STILL_MISSING[@]} -gt 0 ]; then
+        uds_log "Failed to install: ${STILL_MISSING[*]}" "error"
+        return 1
+      else
+        uds_log "Successfully installed missing dependencies" "success"
+      fi
+    else
+      uds_log "Please install these tools before continuing." "error"
+      return 1
+    fi
   fi
 
   # Check Docker is running
@@ -98,8 +140,23 @@ uds_check_requirements() {
 
   # Check Docker Compose is available
   if ! $UDS_DOCKER_COMPOSE_CMD version &> /dev/null; then
-    uds_log "Docker Compose is not available." "error"
-    return 1
+    uds_log "Docker Compose is not available. Attempting to install..." "warning"
+    
+    if command -v apt-get &> /dev/null; then
+      apt-get update && apt-get install -y docker-compose
+    else
+      # Use Docker's official installation script
+      curl -L "https://github.com/docker/compose/releases/download/v2.12.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+      chmod +x /usr/local/bin/docker-compose
+    fi
+    
+    # Update the Docker Compose command
+    UDS_DOCKER_COMPOSE_CMD=$(command -v docker-compose || echo "docker compose")
+    
+    if ! $UDS_DOCKER_COMPOSE_CMD version &> /dev/null; then
+      uds_log "Failed to install Docker Compose" "error"
+      return 1
+    fi
   fi
 
   return 0
@@ -330,20 +387,8 @@ uds_execute_hook() {
 # Check if a port is available
 uds_is_port_available() {
   local port="$1"
-  local timeout="${2:-2}"  # Add timeout parameter with default of 2 seconds
   
-  # Use timeout command if available for more reliable checking
-  if command -v timeout &>/dev/null; then
-    if ! timeout $timeout bash -c "</dev/tcp/localhost/$port" 2>/dev/null; then
-      # Port is available (connection failed or timed out)
-      return 0
-    else
-      # Connection succeeded, port is in use
-      return 1
-    fi
-  fi
-  
-  # Try direct socket approach as fallback
+  # Try direct socket approach
   if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
     # Connection succeeded, port is in use
     return 1
@@ -391,40 +436,6 @@ uds_find_available_port() {
   
   # No available port found
   uds_log "No available port found in range $base_port-$max_port" "error"
-  return 1
-}
-
-# Find a range of available consecutive ports
-uds_find_port_range() {
-  local base_port="$1"
-  local count="$2"
-  local max_port="${3:-65535}"
-  
-  local current_base=$base_port
-  while [ $((current_base + count - 1)) -le $max_port ]; do
-    local all_available=true
-    
-    # Check if all ports in the range are available
-    for offset in $(seq 0 $((count - 1))); do
-      local port=$((current_base + offset))
-      if ! uds_is_port_available "$port"; then
-        all_available=false
-        break
-      fi
-    done
-    
-    if [ "$all_available" = true ]; then
-      # Found an available range
-      echo "$current_base"
-      return 0
-    fi
-    
-    # Skip to the next potential range
-    current_base=$((current_base + 1))
-  done
-  
-  # No available range found
-  uds_log "No available port range found ($count consecutive ports)" "error"
   return 1
 }
 
@@ -596,135 +607,6 @@ networks:
 EOL
 
   uds_log "Generated docker-compose.yml at $output_file" "debug"
-}
-
-# Check health of a deployed application
-uds_check_health() {
-  local app_name="$1"
-  local port="$2"
-  local health_endpoint="${3:-/health}"
-  local timeout="${4:-60}"
-  local health_type="${5:-http}" # http, tcp, container, command
-  local container_name="${6:-}"
-  local health_command="${7:-}"
-  
-  # Skip health check if explicitly disabled
-  if [ "$health_endpoint" = "none" ] || [ "$health_endpoint" = "disabled" ]; then
-    uds_log "Health check disabled for $app_name" "info"
-    return 0
-  }
-  
-  uds_log "Checking health of $app_name using $health_type check" "info"
-  
-  local start_time=$(date +%s)
-  local end_time=$((start_time + timeout))
-  local current_time=$start_time
-  
-  while [ $current_time -lt $end_time ]; do
-    # Attempt health check based on type
-    case "$health_type" in
-      http)
-        # HTTP-based health check
-        uds_log "HTTP health check: http://localhost:${port}${health_endpoint}" "debug"
-        if curl -s -f "http://localhost:${port}${health_endpoint}" &> /dev/null; then
-          uds_log "HTTP health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-      
-      tcp)
-        # TCP-based health check (just check if port is open)
-        uds_log "TCP health check: port ${port}" "debug"
-        if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
-          uds_log "TCP health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-      
-      container)
-        # Container-based health check (check if container is running)
-        if [ -z "$container_name" ]; then
-          container_name="${app_name}-app"
-        fi
-        
-        uds_log "Container health check: $container_name" "debug"
-        if docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
-          # If container has a health check, also verify that
-          if docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null | grep -q "healthy"; then
-            uds_log "Container health check passed for $app_name" "success"
-            return 0
-          elif docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null | grep -q "none"; then
-            # Container has no health check, so running is good enough
-            uds_log "Container health check passed for $app_name (no HEALTHCHECK defined)" "success"
-            return 0
-          fi
-        fi
-        ;;
-      
-      command)
-        # Command-based health check
-        if [ -z "$health_command" ]; then
-          uds_log "No health command specified" "error"
-          return 1
-        fi
-        
-        uds_log "Command health check: $health_command" "debug"
-        if eval "$health_command"; then
-          uds_log "Command health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-      
-      *)
-        # Fallback to HTTP health check
-        uds_log "Unknown health check type: $health_type, falling back to HTTP" "warning"
-        if curl -s -f "http://localhost:${port}${health_endpoint}" &> /dev/null; then
-          uds_log "Fallback HTTP health check passed for $app_name" "success"
-          return 0
-        fi
-        ;;
-    esac
-    
-    # Wait and try again
-    sleep 5
-    current_time=$(date +%s)
-    
-    # Calculate remaining time
-    local remaining=$((end_time - current_time))
-    uds_log "Health check pending... ${remaining}s remaining" "debug"
-  done
-  
-  uds_log "Health check failed for $app_name after ${timeout}s" "error"
-  return 1
-}
-
-# Detect appropriate health check type for an application
-uds_detect_health_check_type() {
-  local app_name="$1"
-  local image="$2"
-  local health_endpoint="${3:-/health}"
-  
-  # Skip if health check is explicitly disabled
-  if [ "$health_endpoint" = "none" ] || [ "$health_endpoint" = "disabled" ]; then
-    echo "none"
-    return 0
-  }
-  
-  # Check if this is a known container type that might not have HTTP
-  if [[ "$image" == *"redis"* ]]; then
-    echo "tcp"
-    return 0
-  elif [[ "$image" == *"postgres"* ]] || [[ "$image" == *"mysql"* ]] || [[ "$image" == *"mariadb"* ]]; then
-    echo "tcp"
-    return 0
-  elif [[ "$image" == *"nginx"* ]] || [[ "$image" == *"httpd"* ]] || [[ "$image" == *"caddy"* ]]; then
-    echo "http"
-    return 0
-  else
-    # Default to http for most applications
-    echo "http"
-    return 0
-  fi
 }
 
 # ============================================================
@@ -1047,6 +929,7 @@ uds_init
 
 # Export functions for use in other scripts
 export -f uds_log uds_load_config uds_register_plugin_arg uds_register_plugin_hook
-export -f uds_execute_hook uds_generate_compose_file uds_check_health
+export -f uds_execute_hook uds_generate_compose_file
 export -f uds_create_nginx_config uds_reload_nginx 
 export -f uds_register_service uds_unregister_service uds_get_service uds_list_services
+export -f uds_is_port_available uds_find_available_port uds_resolve_port_conflicts
