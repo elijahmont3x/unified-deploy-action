@@ -1,0 +1,207 @@
+name: 'Unified Deployment System'
+description: 'A comprehensive deployment system with SSL, dynamic routing, and plugin support'
+branding:
+  icon: 'cloud'
+  color: 'blue'
+
+inputs:
+  command:
+    description: 'Command to run (deploy, setup, cleanup)'
+    required: true
+    default: 'deploy'
+  app-name:
+    description: 'Application name'
+    required: true
+  image:
+    description: 'Docker image name (can be a comma-separated list for multiple services)'
+    required: false
+  tag:
+    description: 'Docker image tag'
+    required: false
+    default: 'latest'
+  domain:
+    description: 'Domain name for deployment'
+    required: true
+  route-type:
+    description: 'Type of route (path or subdomain)'
+    required: false
+    default: 'path'
+  route:
+    description: 'Route path or subdomain prefix'
+    required: false
+  port:
+    description: 'Internal container port to expose'
+    required: false
+    default: '3000'
+  ssl:
+    description: 'Enable SSL'
+    required: false
+    default: 'true'
+  ssl-email:
+    description: 'Email for SSL certificate registration'
+    required: false
+  volumes:
+    description: 'Volume mappings (comma-separated list of source:target)'
+    required: false
+  env-vars:
+    description: 'Environment variables (JSON string)'
+    required: false
+  persistent:
+    description: 'Mark services as persistent (not updated during deployments)'
+    required: false
+    default: 'false'
+  compose-file:
+    description: 'Path to custom docker-compose.yml file'
+    required: false
+  use-profiles:
+    description: 'Use Docker Compose profiles'
+    required: false
+    default: 'true'
+  extra-hosts:
+    description: 'Extra hosts to add to containers (comma-separated list of host:ip)'
+    required: false
+  health-check:
+    description: 'Health check endpoint'
+    required: false
+    default: '/health'
+  health-check-type:
+    description: 'Health check type (http, tcp, container, command)'
+    required: false
+    default: 'auto'
+  health-check-command:
+    description: 'Custom command for health check when using command type'
+    required: false
+  port-auto-assign:
+    description: 'Automatically assign ports if the specified port is in use'
+    required: false
+    default: 'true'
+  version-tracking:
+    description: 'Enable version tracking'
+    required: false
+    default: 'true'
+  pg-migration-enabled:
+    description: 'Enable PostgreSQL migrations'
+    required: false
+    default: 'false'
+  pg-connection-string:
+    description: 'PostgreSQL connection string'
+    required: false
+  pg-backup-enabled:
+    description: 'Enable PostgreSQL backups before migrations'
+    required: false
+    default: 'true'
+  pg-migration-script:
+    description: 'Custom PostgreSQL migration script'
+    required: false
+  telegram-enabled:
+    description: 'Enable Telegram notifications'
+    required: false
+    default: 'false'
+  telegram-bot-token:
+    description: 'Telegram bot token'
+    required: false
+  telegram-chat-id:
+    description: 'Telegram chat ID'
+    required: false
+  telegram-notify-level:
+    description: 'Minimum level for Telegram notifications (debug, info, warning, error)'
+    required: false
+    default: 'info'
+  telegram-include-logs:
+    description: 'Include logs in Telegram notifications'
+    required: false
+    default: 'true'
+  max-log-lines:
+    description: 'Maximum number of log lines to collect on error'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Create configuration file
+      shell: bash
+      run: |
+        echo "Creating deployment configuration..."
+        # Format JSON configuration from inputs
+        cat > ${{ github.action_path }}/config.json << EOF
+        {
+          "command": "${{ inputs.command }}",
+          "app_name": "${{ inputs.app-name }}",
+          "image": "${{ inputs.image }}",
+          "tag": "${{ inputs.tag }}",
+          "domain": "${{ inputs.domain }}",
+          "route_type": "${{ inputs.route-type }}",
+          "route": "${{ inputs.route }}",
+          "port": "${{ inputs.port }}",
+          "ssl": ${{ inputs.ssl == 'true' }},
+          "ssl_email": "${{ inputs.ssl-email }}",
+          "volumes": "${{ inputs.volumes }}",
+          "env_vars": ${{ inputs.env-vars || '{}' }},
+          "persistent": ${{ inputs.persistent == 'true' }},
+          "compose_file": "${{ inputs.compose-file }}",
+          "use_profiles": ${{ inputs.use-profiles == 'true' }},
+          "extra_hosts": "${{ inputs.extra-hosts }}",
+          "health_check": "${{ inputs.health-check }}",
+          "health_check_timeout": ${{ inputs.health-check-timeout }},
+          "plugins": "${{ inputs.plugins }}"
+        }
+        EOF
+
+    - name: Run deployment
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.ssh-key }}
+        script_stop: true
+        script: |
+          set -e  # Exit immediately if a command exits with a non-zero status
+          
+          # Create temporary log file for capturing output
+          LOG_FILE=$(mktemp)
+          
+          # Function to handle errors with improved reporting
+          handle_error() {
+            echo "::error::Deployment failed with exit code $1"
+            echo "::group::Error Logs"
+            tail -n 50 $LOG_FILE | sed 's/\x1b\[[0-9;]*m//g'  # Remove ANSI color codes
+            echo "::endgroup::"
+            exit 1
+          }
+          
+          # Redirect all output to log file and terminal
+          exec > >(tee -a $LOG_FILE) 2>&1
+          
+          echo "Setting up deployment environment..."
+          mkdir -p ${{ inputs.working-dir }}/${{ inputs.app-name }}
+          cd ${{ inputs.working-dir }}
+          
+          # Ensure UDS is installed
+          if [ ! -f "./uds-core.sh" ]; then
+            echo "Installing Unified Deployment System..."
+            # Clone the UDS repository
+            git clone https://github.com/your-org/unified-deployment-system.git ./uds-temp || handle_error $?
+            cp -r ./uds-temp/scripts/* ./
+            cp -r ./uds-temp/plugins ./
+            rm -rf ./uds-temp
+            chmod +x ./*.sh
+          fi
+          
+          # Copy config file
+          cat > ${{ inputs.app-name }}-config.json << 'EOF'
+          ${{ github.action_path }}/config.json
+          EOF
+          
+          # Run the appropriate command with error handling
+          echo "Running ${{ inputs.command }} command..."
+          if [ "${{ inputs.command }}" == "setup" ]; then
+            ./uds-setup.sh --config ${{ inputs.app-name }}-config.json || handle_error $?
+          elif [ "${{ inputs.command }}" == "cleanup" ]; then
+            ./uds-cleanup.sh --config ${{ inputs.app-name }}-config.json || handle_error $?
+          else
+            # Default is deploy
+            ./uds-deploy.sh --config ${{ inputs.app-name }}-config.json || handle_error $?
+          fi
+          
+          echo "Command completed successfully"
+          rm -f $LOG_FILE
