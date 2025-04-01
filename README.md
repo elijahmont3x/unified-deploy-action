@@ -169,6 +169,22 @@ See our [monitoring integration guide](docs/monitoring.md) for detailed setup in
 
 UDS can be used in GitHub Actions workflows. See the `examples` directory for workflow examples.
 
+## Using as a GitHub Action
+
+To use UDS as a GitHub Action:
+
+```yaml
+- name: Deploy with UDS
+  uses: elijahmont3x/unified-deployment-action@v1
+  with:
+    command: deploy
+    app-name: my-app
+    domain: example.com
+    # Other parameters as needed
+```
+
+See the [examples directory](examples/) for complete workflow examples.
+
 ## Documentation
 
 - [Monitoring Integration Guide](docs/monitoring.md)
