@@ -38,10 +38,19 @@ These workflows are starting points - customize them based on your specific need
 # Example customization
 steps:
   - name: Deploy application
-    uses: elijahmont3x/unified-deploy-action@v1
+    uses: elijahmont3x/unified-deploy-action@master
     with:
       # Add your custom parameters here
       command: deploy
       app-name: my-custom-app
       # Add other settings specific to your needs
 ```
+
+## Docker-Based Action Benefits
+
+The examples in this directory use our Docker-based GitHub Action (v1) which provides:
+
+1. **Consistent Environment**: The action runs in a controlled container environment
+2. **Better Security**: All sensitive operations are isolated
+3. **Reduced Dependencies**: No need to install tools on the GitHub runner
+4. **Simpler Integration**: Configuration processed locally before remote execution

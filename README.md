@@ -167,23 +167,38 @@ See our [monitoring integration guide](docs/monitoring.md) for detailed setup in
 
 ## GitHub Actions Integration
 
-UDS can be used in GitHub Actions workflows. See the `examples` directory for workflow examples.
+UDS provides a Docker-based GitHub Action for seamless integration with CI/CD pipelines. The action runs in its own container, ensuring consistency and isolation.
 
-## Using as a GitHub Action
+### Using as a GitHub Action
 
 To use UDS as a GitHub Action:
 
 ```yaml
 - name: Deploy with UDS
-  uses: elijahmont3x/unified-deploy-action@v1
+  uses: elijahmont3x/unified-deploy-action@master
   with:
     command: deploy
     app-name: my-app
+    image: nginx
+    tag: latest
     domain: example.com
-    # Other parameters as needed
+    host: ${{ secrets.DEPLOY_HOST }}
+    username: ${{ secrets.DEPLOY_USER }}
+    ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
 ```
 
-See the [examples directory](examples/) for complete workflow examples.
+## Future Enhancements
+
+UDS is continuously evolving with planned enhancements:
+
+1. **Parallel Deployments** - Support for deploying to multiple hosts simultaneously for high-availability environments
+2. **Enhanced Error Recovery** - Automatic retry mechanisms for intermittent infrastructure failures
+3. **Detailed Progress Reporting** - Real-time progress indicators during long-running deployments
+4. **Custom Templates** - User-provided templates for configurations and deployment artifacts
+5. **Blue/Green Deployments** - Zero-downtime deployments with traffic shifting controls
+6. **Extended Plugin API** - Enhanced plugin framework with better event hooks and data sharing
+
+Contributions addressing these areas are welcome.
 
 ## Documentation
 
@@ -191,6 +206,7 @@ See the [examples directory](examples/) for complete workflow examples.
 - [Plugin Development Guide](docs/plugin-development.md)
 - [Configuration Reference](docs/configuration.md)
 - [Security Best Practices](docs/security.md)
+- [GitHub Actions Guide](docs/github-actions.md)
 
 ## License
 

@@ -1,0 +1,19 @@
+name: Self Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-docker-action:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Build and test Docker action
+        run: |
+          docker build -t uds-action:test .
+          docker run --rm uds-action:test

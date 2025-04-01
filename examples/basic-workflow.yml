@@ -32,7 +32,7 @@ jobs:
       
       - name: Setup environment
         if: github.event_name != 'pull_request'
-        uses: elijahmont3x/unified-deploy-action@v1
+        uses: elijahmont3x/unified-deploy-action@master
         with:
           command: setup
           app-name: ${{ github.event.repository.name }}
@@ -43,7 +43,7 @@ jobs:
       
       - name: Deploy application
         if: github.event_name != 'pull_request'
-        uses: elijahmont3x/unified-deploy-action@v1
+        uses: elijahmont3x/unified-deploy-action@master
         with:
           command: deploy
           app-name: ${{ github.event.repository.name }}
