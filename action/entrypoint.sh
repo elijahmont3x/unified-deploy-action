@@ -12,7 +12,7 @@ log "UDS Docker Action started"
 # from GitHub Actions hyphenated format to proper variables
 declare -A params
 for var in $(env | grep ^INPUT_ | cut -d= -f1); do
-  # Convert INPUT_NAME-WITH-HYPHENS to NAME_WITH_HYPHENS
+  # Convert INPUT_NAME-WITH-HYPHENS to NAME_WITH-HYPHENS
   name=$(echo "$var" | sed 's/^INPUT_//')
   # Convert hyphens to underscores for shell variable compliance
   clean_name=$(echo "$name" | tr '-' '_')
@@ -48,9 +48,9 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-# Set up SSH key
+# Set up SSH key using printf to preserve newlines
 if [ -n "${params[SSH_KEY]}" ]; then
-  echo "${params[SSH_KEY]}" > "$SSH_KEY_FILE"
+  printf '%s\n' "${params[SSH_KEY]}" > "$SSH_KEY_FILE"
   chmod 600 "$SSH_KEY_FILE"
 else
   log "Error: ssh-key is required"
