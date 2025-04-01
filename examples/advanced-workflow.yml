@@ -1,0 +1,171 @@
+name: Advanced Deploy with UDS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  APP_NAME: my-advanced-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}:${{ github.sha }},${{ env.REGISTRY }}/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Run security scan on image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+  
+  setup:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup environment
+        uses: your-org/unified-deployment-action@v1
+        with:
+          command: setup
+          app-name: ${{ env.APP_NAME }}
+          domain: ${{ secrets.DOMAIN_NAME }}
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          secure-mode: 'true'
+          check-system: 'true'
+  
+  deploy-staging:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to staging
+        uses: your-org/unified-deployment-action@v1
+        with:
+          command: deploy
+          app-name: ${{ env.APP_NAME }}-staging
+          image: ${{ env.REGISTRY }}/${{ github.repository }}
+          tag: ${{ github.sha }}
+          domain: staging.${{ secrets.DOMAIN_NAME }}
+          route-type: subdomain
+          route: api
+          port: 3000:3000
+          ssl: true
+          ssl-email: ${{ secrets.SSL_EMAIL }}
+          ssl-wildcard: true
+          ssl-dns-provider: ${{ secrets.DNS_PROVIDER }}
+          ssl-dns-credentials: ${{ secrets.DNS_CREDENTIALS }}
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          health-check: /health
+          health-check-type: auto
+          health-check-timeout: 120
+          check-dependencies: 'true'
+          port-auto-assign: 'true'
+          telegram-enabled: 'true'
+          telegram-bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          telegram-chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          plugins: 'ssl-manager,telegram-notifier,security-manager'
+          env-vars: >
+            {
+              "NODE_ENV": "staging",
+              "API_KEY": "${{ secrets.API_KEY }}",
+              "DATABASE_URL": "${{ secrets.STAGING_DATABASE_URL }}",
+              "LOG_LEVEL": "debug"
+            }
+  
+  test-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test staging deployment
+        run: |
+          echo "Running integration tests against staging environment"
+          curl -s -f "https://api.staging.${{ secrets.DOMAIN_NAME }}/health" || exit 1
+          # Add additional integration tests here
+  
+  deploy-production:
+    needs: test-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to production with multi-stage process
+        uses: your-org/unified-deployment-action@v1
+        with:
+          command: deploy
+          app-name: ${{ env.APP_NAME }}
+          image: ${{ env.REGISTRY }}/${{ github.repository }}
+          tag: ${{ github.sha }}
+          domain: ${{ secrets.DOMAIN_NAME }}
+          route-type: subdomain
+          route: api
+          port: 3000
+          ssl: true
+          ssl-email: ${{ secrets.SSL_EMAIL }}
+          ssl-wildcard: true
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          multi-stage: 'true'
+          check-dependencies: 'true'
+          plugins: 'ssl-manager,telegram-notifier,persistence-manager,security-manager'
+          env-vars: >
+            {
+              "NODE_ENV": "production",
+              "API_KEY": "${{ secrets.API_KEY }}",
+              "DATABASE_URL": "${{ secrets.PROD_DATABASE_URL }}",
+              "LOG_LEVEL": "info"
+            }
+  
+  post-deploy:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify deployment
+        run: |
+          echo "Performing post-deployment verification"
+          curl -s -f "https://api.${{ secrets.DOMAIN_NAME }}/health" || exit 1
+      
+      - name: Tag release
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/releases \
+            -d '{
+              "tag_name": "deploy-${{ github.run_number }}",
+              "name": "Production Deployment ${{ github.run_number }}",
+              "body": "Deployed commit ${{ github.sha }} to production"
+            }'

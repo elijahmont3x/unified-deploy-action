@@ -114,6 +114,19 @@ inputs:
   max-log-lines:
     description: 'Maximum number of log lines to collect on error'
     required: false
+  working-dir:
+    description: 'Working directory on the remote server'
+    required: false
+    default: '/opt/uds'
+  host:
+    description: 'Remote host'
+    required: true
+  username:
+    description: 'Remote username'
+    required: true
+  ssh-key:
+    description: 'SSH private key'
+    required: true
 
 runs:
   using: 'composite'
@@ -142,7 +155,21 @@ runs:
           "use_profiles": ${{ inputs.use-profiles == 'true' }},
           "extra_hosts": "${{ inputs.extra-hosts }}",
           "health_check": "${{ inputs.health-check }}",
-          "health_check_timeout": ${{ inputs.health-check-timeout }},
+          "health_check_timeout": ${{ inputs.health-check-timeout || '60' }},
+          "health_check_type": "${{ inputs.health-check-type }}",
+          "health_check_command": "${{ inputs.health-check-command }}",
+          "port_auto_assign": ${{ inputs.port-auto-assign == 'true' }},
+          "version_tracking": ${{ inputs.version-tracking == 'true' }},
+          "pg_migration_enabled": ${{ inputs.pg-migration-enabled == 'true' }},
+          "pg_connection_string": "${{ inputs.pg-connection-string }}",
+          "pg_backup_enabled": ${{ inputs.pg-backup-enabled == 'true' }},
+          "pg_migration_script": "${{ inputs.pg-migration-script }}",
+          "telegram_enabled": ${{ inputs.telegram-enabled == 'true' }},
+          "telegram_bot_token": "${{ inputs.telegram-bot-token }}",
+          "telegram_chat_id": "${{ inputs.telegram-chat-id }}",
+          "telegram_notify_level": "${{ inputs.telegram-notify-level }}",
+          "telegram_include_logs": ${{ inputs.telegram-include-logs == 'true' }},
+          "max_log_lines": ${{ inputs.max-log-lines || '100' }},
           "plugins": "${{ inputs.plugins }}",
           "auto_install_deps": true
         }
@@ -159,22 +186,65 @@ runs:
           set -e
           
           echo "Setting up deployment environment..."
-          mkdir -p ${{ inputs.working-dir }}/${{ inputs.app-name }}
-          cd ${{ inputs.working-dir }}
+          # Create working directory and app directory
+          WORKING_DIR="${{ inputs.working-dir }}"
+          mkdir -p "$WORKING_DIR/${{ inputs.app-name }}"
+          cd "$WORKING_DIR"
           
-          # Ensure UDS is installed
-          if [ ! -f "./uds-core.sh" ]; then
-            echo "Installing Unified Deployment System..."
-            # Clone the UDS repository
-            git clone https://github.com/your-org/unified-deployment-system.git ./uds-temp || {
-              echo "Failed to clone UDS repository"
-              exit 1
-            }
-            cp -r ./uds-temp/scripts/* ./
-            cp -r ./uds-temp/plugins ./
-            rm -rf ./uds-temp
-            chmod +x ./*.sh
-          fi
+          # Create setup script function
+          cat > ./setup_uds.sh << 'EOL'
+          #!/bin/bash
+          
+          # Function to install UDS
+          setup_uds() {
+            local uds_repo="https://github.com/your-org/unified-deployment-system.git"
+            local uds_version="v1.0.0"
+            local target_dir="$1"
+            
+            # Create target directory if it doesn't exist
+            mkdir -p "$target_dir"
+            
+            if [ ! -f "$target_dir/uds-core.sh" ]; then
+              echo "Installing Unified Deployment System..."
+              
+              # Create temporary directory
+              local temp_dir=$(mktemp -d)
+              
+              # Clone repository
+              if ! git clone --branch "$uds_version" "$uds_repo" "$temp_dir"; then
+                echo "Failed to clone UDS repository"
+                rm -rf "$temp_dir"
+                return 1
+              fi
+              
+              # Copy files
+              cp -r "$temp_dir/scripts/"* "$target_dir/"
+              mkdir -p "$target_dir/plugins"
+              cp -r "$temp_dir/plugins/"* "$target_dir/plugins/"
+              
+              # Clean up
+              rm -rf "$temp_dir"
+              
+              # Make scripts executable
+              chmod +x "$target_dir"/*.sh
+              
+              echo "UDS installed successfully"
+              return 0
+            else
+              echo "UDS is already installed"
+              return 0
+            fi
+          }
+          
+          # Run the setup function
+          setup_uds "$1"
+          EOL
+          
+          # Make script executable
+          chmod +x ./setup_uds.sh
+          
+          # Install UDS
+          ./setup_uds.sh "$WORKING_DIR"
           
           # Copy config file
           cat > ${{ inputs.app-name }}-config.json << 'EOF'

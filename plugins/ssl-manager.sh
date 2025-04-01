@@ -12,6 +12,9 @@ plugin_register_ssl_manager() {
   uds_register_plugin_arg "ssl_manager" "SSL_STAGING" "false"
   uds_register_plugin_arg "ssl_manager" "SSL_RENEWAL_DAYS" "30"
   uds_register_plugin_arg "ssl_manager" "SSL_RSA_KEY_SIZE" "4096"
+  uds_register_plugin_arg "ssl_manager" "SSL_WILDCARD" "false"
+  uds_register_plugin_arg "ssl_manager" "SSL_DNS_PROVIDER" ""
+  uds_register_plugin_arg "ssl_manager" "SSL_DNS_CREDENTIALS" ""
   
   # Register plugin hooks
   uds_register_plugin_hook "ssl_manager" "pre_deploy" "plugin_ssl_check"
@@ -41,7 +44,11 @@ plugin_ssl_check() {
   fi
   
   local server_name="$DOMAIN"
-  if [ "$ROUTE_TYPE" = "subdomain" ] && [ -n "$ROUTE" ]; then
+  # Check for wildcard domain request
+  if [ "${SSL_WILDCARD:-false}" = "true" ] && [ "$ROUTE_TYPE" = "subdomain" ]; then
+    server_name="*.${DOMAIN}"
+    uds_log "Wildcard SSL certificate requested for $server_name" "info"
+  elif [ "$ROUTE_TYPE" = "subdomain" ] && [ -n "$ROUTE" ]; then
     server_name="${ROUTE}.${DOMAIN}"
   fi
   
@@ -81,12 +88,43 @@ plugin_ssl_setup() {
   # Create certificate directory if it doesn't exist
   mkdir -p "$cert_dir"
   
+  # Check for wildcard certificate request
+  local is_wildcard=false
+  if [[ "$server_name" == \** ]]; then
+    is_wildcard=true
+  fi
+  
   # Use Let's Encrypt if certbot is available and we have an email
   if command -v certbot &> /dev/null && [ -n "$email" ]; then
     uds_log "Using Let's Encrypt to obtain SSL certificate" "info"
     
     # Build certbot command
-    local certbot_cmd="certbot certonly --standalone"
+    local certbot_cmd="certbot certonly"
+    
+    # Wildcard certificates require DNS challenge
+    if [ "$is_wildcard" = true ]; then
+      if [ -z "${SSL_DNS_PROVIDER}" ]; then
+        uds_log "Wildcard certificates require a DNS provider, falling back to self-signed" "warning"
+        plugin_ssl_generate_self_signed "$server_name" "$cert_dir"
+        return 0
+      fi
+      
+      uds_log "Using DNS challenge for wildcard certificate" "info"
+      certbot_cmd="${certbot_cmd} --dns-${SSL_DNS_PROVIDER}"
+      
+      # Add credentials if provided
+      if [ -n "${SSL_DNS_CREDENTIALS}" ]; then
+        # Create a secure credentials file
+        local creds_file="/tmp/dns_credentials.ini"
+        echo "${SSL_DNS_CREDENTIALS}" > "$creds_file"
+        uds_secure_permissions "$creds_file" 600
+        
+        certbot_cmd="${certbot_cmd} --dns-${SSL_DNS_PROVIDER}-credentials $creds_file"
+      fi
+    else
+      # For non-wildcard, use standalone
+      certbot_cmd="${certbot_cmd} --standalone"
+    fi
     
     # Add staging flag if enabled
     if [ "${SSL_STAGING}" = "true" ]; then
@@ -100,11 +138,14 @@ plugin_ssl_setup() {
     # Add RSA key size
     certbot_cmd="${certbot_cmd} --rsa-key-size ${SSL_RSA_KEY_SIZE}"
     
-    # Stop Nginx temporarily
-    if docker ps -q --filter "name=nginx-proxy" | grep -q .; then
-      docker stop nginx-proxy || true
-    elif command -v nginx &> /dev/null; then
-      service nginx stop || systemctl stop nginx || true
+    # For non-wildcard certs, need to stop web servers
+    if [ "$is_wildcard" = false ]; then
+      # Stop Nginx temporarily
+      if docker ps -q --filter "name=nginx-proxy" | grep -q .; then
+        docker stop nginx-proxy || true
+      elif command -v nginx &> /dev/null; then
+        service nginx stop || systemctl stop nginx || true
+      fi
     fi
     
     # Run certbot
@@ -118,13 +159,20 @@ plugin_ssl_setup() {
       cp -L /etc/letsencrypt/live/${server_name}/privkey.pem "${cert_dir}/privkey.pem"
       
       uds_log "Let's Encrypt certificate obtained successfully" "success"
+      
+      # Clean up credentials file if it exists
+      if [ -f "/tmp/dns_credentials.ini" ]; then
+        uds_secure_delete "/tmp/dns_credentials.ini"
+      fi
     fi
     
-    # Restart Nginx
-    if docker ps -a --filter "name=nginx-proxy" | grep -q .; then
-      docker start nginx-proxy || true
-    elif command -v nginx &> /dev/null; then
-      service nginx start || systemctl start nginx || true
+    # Restart Nginx if we stopped it
+    if [ "$is_wildcard" = false ]; then
+      if docker ps -a --filter "name=nginx-proxy" | grep -q .; then
+        docker start nginx-proxy || true
+      elif command -v nginx &> /dev/null; then
+        service nginx start || systemctl start nginx || true
+      fi
     fi
   else
     # Generate self-signed certificate

@@ -7,8 +7,8 @@
 set -eo pipefail
 
 # Get script directory and load core module
-UDS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$UDS_SCRIPT_DIR/uds-core.sh"
+UDS_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$UDS_BASE_DIR/uds-core.sh"
 
 # Display help information
 uds_show_help() {
@@ -112,13 +112,20 @@ uds_cleanup_application() {
     uds_log "Stopping containers for $APP_NAME" "info"
     cd "$APP_DIR"
     
-    if [ -f "docker-compose.yml" ]; then
-      $UDS_DOCKER_COMPOSE_CMD -f "docker-compose.yml" down --remove-orphans
+    # Use docker-compose if available, else direct docker commands
+    if [ -f "$APP_DIR/docker-compose.yml" ]; then
+      $UDS_DOCKER_COMPOSE_CMD -f "$APP_DIR/docker-compose.yml" down --remove-orphans
     else
       # Fallback to direct container removal
       docker stop $(docker ps -a -q --filter "name=${APP_NAME}-") 2>/dev/null || true
       docker rm $(docker ps -a -q --filter "name=${APP_NAME}-") 2>/dev/null || true
     fi
+  fi
+  
+  # Check for errors during container cleanup
+  if [ $? -ne 0 ]; then
+    uds_log "Warning: Some containers may not have been properly stopped or removed" "warning"
+    # Continue anyway 
   fi
   
   # Remove Nginx configuration
@@ -127,14 +134,18 @@ uds_cleanup_application() {
     rm -f "${UDS_NGINX_DIR}/${APP_NAME}.conf"
     
     # Reload Nginx
-    uds_reload_nginx
+    uds_reload_nginx || {
+      uds_log "Warning: Failed to reload Nginx configuration" "warning"
+      # Continue anyway
+    }
   fi
   
   # Remove data directories if not keeping data
   if [ "${KEEP_DATA:-false}" != "true" ]; then
-    if [ -d "${PERSISTENCE_DATA_DIR:-${UDS_BASE_DIR}/data}/${APP_NAME}" ]; then
+    local data_dir="${PERSISTENCE_DATA_DIR:-${UDS_BASE_DIR}/data}/${APP_NAME}"
+    if [ -d "$data_dir" ]; then
       uds_log "Removing data directory for $APP_NAME" "info"
-      rm -rf "${PERSISTENCE_DATA_DIR:-${UDS_BASE_DIR}/data}/${APP_NAME}"
+      rm -rf "$data_dir"
     fi
   else
     uds_log "Keeping data directory for $APP_NAME" "info"
@@ -162,12 +173,18 @@ uds_do_cleanup() {
   uds_parse_args "$@"
   
   # Load configuration
-  uds_load_config "$CONFIG_FILE"
+  uds_load_config "$CONFIG_FILE" || {
+    uds_log "Failed to load configuration" "error"
+    return 1
+  }
   
   # Clean up the application
-  uds_cleanup_application
+  uds_cleanup_application || {
+    uds_log "Cleanup failed" "error"
+    return 1
+  }
   
-  return $?
+  return 0
 }
 
 # Execute cleanup if being run directly

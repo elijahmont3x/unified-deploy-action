@@ -6,7 +6,7 @@
 
 set -eo pipefail
 
-# Default configuration
+# Define base directories and paths consistently
 UDS_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UDS_VERSION="1.0.0"
 UDS_PLUGINS_DIR="${UDS_BASE_DIR}/plugins"
@@ -15,7 +15,6 @@ UDS_LOGS_DIR="${UDS_BASE_DIR}/logs"
 UDS_CERTS_DIR="${UDS_BASE_DIR}/certs"
 UDS_NGINX_DIR="${UDS_BASE_DIR}/nginx"
 UDS_REGISTRY_FILE="${UDS_BASE_DIR}/service-registry.json"
-UDS_SCRIPT_DIR="${UDS_BASE_DIR}/scripts"
 
 # Core environmental variables
 UDS_TIME_ZONE="${TZ:-UTC}"
@@ -32,7 +31,7 @@ declare -A UDS_LOG_LEVELS=(
 )
 
 # Current log level
-UDS_LOG_LEVEL="info"
+UDS_LOG_LEVEL="${UDS_LOG_LEVEL:-info}"
 
 # Color definitions for logs
 declare -A UDS_LOG_COLORS=(
@@ -58,24 +57,40 @@ declare -A UDS_PLUGIN_HOOKS=()
 
 # Initialize the UDS environment
 uds_init() {
-  # Create required directories
+  # Create required directories with secure permissions
   mkdir -p "${UDS_CONFIGS_DIR}" "${UDS_LOGS_DIR}" "${UDS_CERTS_DIR}" "${UDS_NGINX_DIR}"
-
+  
+  # Set secure permissions on sensitive directories
+  chmod 700 "${UDS_CONFIGS_DIR}"
+  chmod 700 "${UDS_LOGS_DIR}"
+  chmod 700 "${UDS_CERTS_DIR}"
+  
   # Initialize service registry if it doesn't exist
   if [ ! -f "${UDS_REGISTRY_FILE}" ]; then
     echo '{"services":{}}' > "${UDS_REGISTRY_FILE}"
+    chmod 600 "${UDS_REGISTRY_FILE}"
   fi
 
-  # Load health check module
-  if [ -f "${UDS_SCRIPT_DIR}/uds-health.sh" ]; then
-    source "${UDS_SCRIPT_DIR}/uds-health.sh"
-  fi
+  # Load modules
+  uds_load_modules
 
   # Discover and register plugins
   uds_discover_plugins
 
   # Ensure required tools are available
   uds_check_requirements
+}
+
+# Load all required modules
+uds_load_modules() {
+  # Load health check module
+  if [ -f "${UDS_BASE_DIR}/uds-health.sh" ]; then
+    source "${UDS_BASE_DIR}/uds-health.sh"
+    # Export the health check functions
+    if type uds_check_health &>/dev/null; then
+      export -f uds_check_health uds_detect_health_check_type
+    fi
+  fi
 }
 
 # Check for required tools and install missing ones if possible
@@ -187,6 +202,56 @@ uds_log() {
 }
 
 # ============================================================
+# SECURITY FUNCTIONS
+# ============================================================
+
+# Apply secure permissions to files or directories
+uds_secure_permissions() {
+  local target="$1"
+  local perms="${2:-600}"
+  
+  if [ ! -e "$target" ]; then
+    uds_log "Target does not exist: $target" "error"
+    return 1
+  fi
+  
+  uds_log "Setting permissions $perms on $target" "debug"
+  chmod "$perms" "$target"
+  
+  # Set owner if running as root
+  if [ "$(id -u)" -eq 0 ]; then
+    chown root:root "$target"
+  fi
+  
+  return 0
+}
+
+# Securely delete sensitive files
+uds_secure_delete() {
+  local target="$1"
+  
+  if [ ! -e "$target" ]; then
+    uds_log "Target does not exist: $target" "debug"
+    return 0
+  fi
+  
+  uds_log "Securely deleting: $target" "debug"
+  
+  # Check for secure deletion tools
+  if command -v shred &> /dev/null; then
+    shred -u -z "$target"
+  elif command -v srm &> /dev/null; then
+    srm -z "$target"
+  else
+    # Fallback: overwrite with zeros before deleting
+    dd if=/dev/zero of="$target" bs=1k count=1 conv=notrunc &> /dev/null
+    rm -f "$target"
+  fi
+  
+  return 0
+}
+
+# ============================================================
 # CONFIGURATION FUNCTIONS
 # ============================================================
 
@@ -199,10 +264,12 @@ uds_load_config() {
     return 1
   fi
 
+  # Apply secure permissions to config file
+  uds_secure_permissions "$config_file" 600
+  
   # Read configuration into variables
   local config_json=$(cat "$config_file")
 
-  # Parse configuration using jq
   APP_NAME=$(echo "$config_json" | jq -r '.app_name // empty')
   COMMAND=$(echo "$config_json" | jq -r '.command // "deploy"')
   IMAGE=$(echo "$config_json" | jq -r '.image // empty')
@@ -221,6 +288,11 @@ uds_load_config() {
   EXTRA_HOSTS=$(echo "$config_json" | jq -r '.extra_hosts // empty')
   HEALTH_CHECK=$(echo "$config_json" | jq -r '.health_check // "/health"')
   HEALTH_CHECK_TIMEOUT=$(echo "$config_json" | jq -r '.health_check_timeout // "60"')
+  HEALTH_CHECK_TYPE=$(echo "$config_json" | jq -r '.health_check_type // "auto"')
+  HEALTH_CHECK_COMMAND=$(echo "$config_json" | jq -r '.health_check_command // empty')
+  PORT_AUTO_ASSIGN=$(echo "$config_json" | jq -r '.port_auto_assign // true')
+  VERSION_TRACKING=$(echo "$config_json" | jq -r '.version_tracking // true')
+  MAX_LOG_LINES=$(echo "$config_json" | jq -r '.max_log_lines // "100"')
   PLUGINS=$(echo "$config_json" | jq -r '.plugins // empty')
 
   # Set the app directory
@@ -248,7 +320,8 @@ uds_load_config() {
   # Export configuration for plugins
   export APP_NAME COMMAND IMAGE TAG DOMAIN ROUTE_TYPE ROUTE PORT SSL SSL_EMAIL
   export VOLUMES ENV_VARS PERSISTENT COMPOSE_FILE USE_PROFILES EXTRA_HOSTS
-  export HEALTH_CHECK HEALTH_CHECK_TIMEOUT PLUGINS APP_DIR
+  export HEALTH_CHECK HEALTH_CHECK_TIMEOUT HEALTH_CHECK_TYPE HEALTH_CHECK_COMMAND
+  export PORT_AUTO_ASSIGN VERSION_TRACKING MAX_LOG_LINES APP_DIR
 
   return 0
 }
@@ -303,6 +376,11 @@ uds_discover_plugins() {
 # Activate specific plugins
 uds_activate_plugins() {
   local plugins_list="$1"
+  
+  # Skip if no plugins specified
+  if [ -z "$plugins_list" ]; then
+    return 0
+  fi
   
   # Split comma-separated list
   IFS=',' read -ra PLUGINS_ARRAY <<< "$plugins_list"
@@ -387,14 +465,16 @@ uds_execute_hook() {
 # Check if a port is available
 uds_is_port_available() {
   local port="$1"
+  local host="${2:-localhost}"
   
-  # Try direct socket approach
-  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
+  # More comprehensive port availability check
+  # First try direct socket approach
+  if (echo > /dev/tcp/$host/$port) 2>/dev/null; then
     # Connection succeeded, port is in use
     return 1
   fi
   
-  # Try alternative checks if socket approach fails
+  # Try alternative checks with different tools
   if command -v netstat &>/dev/null; then
     if netstat -tuln | grep -q ":$port "; then
       # Port is in use
@@ -410,6 +490,12 @@ uds_is_port_available() {
       # Port is in use
       return 1
     fi
+  elif command -v nmap &>/dev/null; then
+    # Use nmap as a last resort as it's slower
+    if nmap -p "$port" "$host" 2>/dev/null | grep -q "open"; then
+      # Port is in use
+      return 1
+    fi
   fi
   
   # Port is available
@@ -421,10 +507,11 @@ uds_find_available_port() {
   local base_port="$1"
   local max_port="${2:-65535}"
   local increment="${3:-1}"
+  local host="${4:-localhost}"
   
   local current_port=$base_port
   while [ $current_port -le $max_port ]; do
-    if uds_is_port_available "$current_port"; then
+    if uds_is_port_available "$current_port" "$host"; then
       # Found an available port
       echo "$current_port"
       return 0
@@ -443,25 +530,60 @@ uds_find_available_port() {
 uds_resolve_port_conflicts() {
   local port="$1"
   local app_name="$2"
+  local host_port=""
+  local container_port=""
   
-  uds_log "Checking if port $port is available for $app_name" "info"
-  
-  if uds_is_port_available "$port"; then
-    uds_log "Port $port is available" "debug"
+  # If port auto-assign is disabled, just return the original port
+  if [ "${PORT_AUTO_ASSIGN:-true}" != "true" ]; then
     echo "$port"
     return 0
-  else
-    uds_log "Port $port is already in use, finding an alternative" "warning"
+  fi
+  
+  # Check if port contains mapping (host:container)
+  if [[ "$port" == *":"* ]]; then
+    host_port=$(echo "$port" | cut -d: -f1)
+    container_port=$(echo "$port" | cut -d: -f2)
+    uds_log "Checking if host port $host_port is available for $app_name" "info"
     
-    # Try to find an available port
-    local new_port=$(uds_find_available_port $((port + 1)))
-    if [ -n "$new_port" ]; then
-      uds_log "Assigned alternative port $new_port for $app_name" "info"
-      echo "$new_port"
+    if uds_is_port_available "$host_port"; then
+      uds_log "Host port $host_port is available" "debug"
+      echo "$port"  # Return original mapping
       return 0
     else
-      uds_log "Failed to find an available port for $app_name" "error"
-      return 1
+      uds_log "Host port $host_port is already in use, finding an alternative" "warning"
+      
+      # Find an available host port
+      local new_host_port=$(uds_find_available_port $((host_port + 1)))
+      if [ -n "$new_host_port" ]; then
+        uds_log "Assigned alternative host port $new_host_port for $app_name" "info"
+        echo "${new_host_port}:${container_port}"
+        return 0
+      else
+        uds_log "Failed to find an available host port for $app_name" "error"
+        return 1
+      fi
+    fi
+  else
+    # Standard single port
+    uds_log "Checking if port $port is available for $app_name" "info"
+    
+    if uds_is_port_available "$port"; then
+      uds_log "Port $port is available" "debug"
+      echo "$port"
+      return 0
+    else
+      uds_log "Port $port is already in use, finding an alternative" "warning"
+      
+      # Try to find an available port
+      local new_port=$(uds_find_available_port $((port + 1)))
+      if [ -n "$new_port" ]; then
+        uds_log "Assigned alternative port $new_port for $app_name" "info"
+        echo "$new_port"
+        return 0
+      else
+        uds_log "Failed to find an available port for $app_name" "error"
+        return 1
+      fi
     fi
   fi
 }
@@ -483,6 +605,10 @@ uds_generate_compose_file() {
   local extra_hosts="${9:-}"
 
   uds_log "Generating docker-compose.yml for $app_name" "debug"
+
+  # Apply secure permissions to the output file directory
+  mkdir -p "$(dirname "$output_file")"
+  uds_secure_permissions "$(dirname "$output_file")" 700
 
   # Start the compose file
   cat > "$output_file" << EOL
@@ -518,8 +644,16 @@ EOL
       cat >> "$output_file" << EOL
     restart: unless-stopped
     ports:
-      - "${service_port}:${service_port}"
 EOL
+      
+      # Handle port mapping format (host:container)
+      if [[ "$service_port" == *":"* ]]; then
+        local host_port=$(echo "$service_port" | cut -d: -f1)
+        local container_port=$(echo "$service_port" | cut -d: -f2)
+        echo "      - \"${host_port}:${container_port}\"" >> "$output_file"
+      else
+        echo "      - \"${service_port}:${service_port}\"" >> "$output_file"
+      fi
       
       # Add environment variables
       if [ "$env_vars" != "{}" ]; then
@@ -566,8 +700,16 @@ EOL
     cat >> "$output_file" << EOL
     restart: unless-stopped
     ports:
-      - "${port}:${port}"
 EOL
+    
+    # Handle port mapping format (host:container)
+    if [[ "$port" == *":"* ]]; then
+      local host_port=$(echo "$port" | cut -d: -f1)
+      local container_port=$(echo "$port" | cut -d: -f2)
+      echo "      - \"${host_port}:${container_port}\"" >> "$output_file"
+    else
+      echo "      - \"${port}:${port}\"" >> "$output_file"
+    fi
     
     # Add environment variables
     if [ "$env_vars" != "{}" ]; then
@@ -606,6 +748,9 @@ networks:
     name: ${app_name}-network
 EOL
 
+  # Secure the compose file
+  uds_secure_permissions "$output_file" 600
+  
   uds_log "Generated docker-compose.yml at $output_file" "debug"
 }
 
@@ -758,31 +903,66 @@ uds_sanitize_env_vars() {
   local input="$1"
   local sanitized="$input"
   
-  # Patterns to sanitize
+  # Patterns to sanitize - expanded to cover more sensitive data patterns
   local patterns=(
     "password=[^\"'& ]*"
     "passwd=[^\"'& ]*"
+    "pass=[^\"'& ]*"
+    "pwd=[^\"'& ]*"
     "secret=[^\"'& ]*"
     "key=[^\"'& ]*"
-    "token=[^\"'& ]*"
     "apikey=[^\"'& ]*"
     "api_key=[^\"'& ]*"
+    "api-key=[^\"'& ]*"
+    "access_key=[^\"'& ]*"
+    "access-key=[^\"'& ]*"
+    "token=[^\"'& ]*"
+    "auth=[^\"'& ]*"
     "access_token=[^\"'& ]*"
-    "DATABASE_URL=[^\"'& ]*"
-    "CONNECTION_STRING=[^\"'& ]*"
-    "TELEGRAM_BOT_TOKEN=[^\"'& ]*"
+    "refresh_token=[^\"'& ]*"
+    "CLIENT_SECRET=[^\"'& ]*"
+    "IDENTITY_KEY=[^\"'& ]*"
+    "SIGNING_KEY=[^\"'& ]*"
+    "ENCRYPTION_KEY=[^\"'& ]*"
+    "LICENSE_KEY=[^\"'& ]*"
+    "ACCOUNT_KEY=[^\"'& ]*"
+    "MASTER_KEY=[^\"'& ]*"
+    "ADMIN_KEY=[^\"'& ]*"
+    "AWS_ACCESS_KEY=[^\"'& ]*"
+    "AWS_SECRET_KEY=[^\"'& ]*"
+    "AZURE_KEY=[^\"'& ]*"
+    "GOOGLE_API_KEY=[^\"'& ]*"
+    "SALESFORCE_TOKEN=[^\"'& ]*"
+    "STRIPE_KEY=[^\"'& ]*"
+    "STRIPE_SECRET=[^\"'& ]*"
+    "PAYPAL_CLIENT_ID=[^\"'& ]*"
+    "PAYPAL_SECRET=[^\"'& ]*"
+    "TWILIO_AUTH_TOKEN=[^\"'& ]*"
+    "MAILCHIMP_API_KEY=[^\"'& ]*"
+    "OAUTH_CLIENT_SECRET=[^\"'& ]*"
+    "SENDGRID_API_KEY=[^\"'& ]*"
+    "API_SECRET=[^\"'& ]*"
   )
   
   # Apply sanitization to each pattern
   for pattern in "${patterns[@]}"; do
     sanitized=$(echo "$sanitized" | sed -E "s/($pattern)/\1=******/g")
-  fi
+  done
   
-  # Sanitize JSON patterns in env vars
-  sanitized=$(echo "$sanitized" | sed -E 's/"(password|secret|token|key|apikey|api_key)": *"[^"]*"/"\\1": "******"/g')
+  # Sanitize JSON patterns in env vars - expanded to cover more keys
+  sanitized=$(echo "$sanitized" | sed -E 's/"(password|secret|token|key|apikey|api_key|access_token|auth|cert|private_key|ssh_key)": *"[^"]*"/"\\1": "******"/g')
   
-  # Sanitize connection strings
+  # Sanitize connection strings with various formats
   sanitized=$(echo "$sanitized" | sed -E 's|([a-zA-Z]+://[^:]+:)[^@]+(@)|\\1******\\2|g')
+  
+  # Sanitize potential Base64 encoded secrets or JWTs (common pattern: long string with periods)
+  sanitized=$(echo "$sanitized" | sed -E 's/eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/********/g')
+  
+  # Sanitize credit card numbers
+  sanitized=$(echo "$sanitized" | sed -E 's/[0-9]{13,19}/XXXX-XXXX-XXXX-XXXX/g')
+  
+  # Sanitize auth headers in HTTP requests (Bearer tokens)
+  sanitized=$(echo "$sanitized" | sed -E 's/(Authorization: Bearer) [a-zA-Z0-9._-]+/\1 ********/g')
   
   echo "$sanitized"
 }
@@ -933,3 +1113,4 @@ export -f uds_execute_hook uds_generate_compose_file
 export -f uds_create_nginx_config uds_reload_nginx 
 export -f uds_register_service uds_unregister_service uds_get_service uds_list_services
 export -f uds_is_port_available uds_find_available_port uds_resolve_port_conflicts
+export -f uds_secure_permissions uds_secure_delete
