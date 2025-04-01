@@ -122,7 +122,7 @@ EOL
 Keep your UDS installation updated:
 
 ```bash
-cd unified-deployment-system
+cd unified-deploy-action
 git pull
 chmod +x scripts/*.sh
 ```

@@ -19,8 +19,8 @@ UDS is a flexible deployment system that allows you to easily deploy and manage 
 
 ```bash
 # Clone the repository
-git clone https://github.com/elijahmont3x/unified-deployment-system.git
-cd unified-deployment-system
+git clone https://github.com/elijahmont3x/unified-deploy-action.git
+cd unified-deploy-action
 
 # Make scripts executable
 chmod +x scripts/*.sh
