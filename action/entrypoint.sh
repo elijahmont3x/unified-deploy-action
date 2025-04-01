@@ -8,42 +8,36 @@ log() {
 
 log "UDS Docker Action started"
 
-# Debug - print all environment variables to help troubleshoot
-log "Environment variables:"
-env | sort
-
-# Get key parameters correctly from environment variables
+# Define important paths
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# CRITICAL FIX: GitHub Actions converts 'app-name' to INPUT_APP_NAME (underscores, not hyphens)
+# Get variables directly from GitHub Actions environment
 APP_NAME="${INPUT_APP_NAME}"
 HOST="${INPUT_HOST}"
 USERNAME="${INPUT_USERNAME}"
 SSH_KEY="${INPUT_SSH_KEY}"
 
-log "DEBUG: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}', SSH_KEY length=${#SSH_KEY}"
-
-# Validate required inputs with better error messages
+# Validate required inputs
 if [ -z "$APP_NAME" ]; then
-  log "Error: app-name is required but was not provided or could not be read"
-  log "Please check your workflow file has 'app-name: your-app-name' properly defined"
+  log "Error: app-name is required"
   exit 1
 fi
 
-if [ -z "${HOST}" ]; then
+if [ -z "$HOST" ]; then
   log "Error: host is required"
   exit 1
 fi
 
-if [ -z "${USERNAME}" ]; then
+if [ -z "$USERNAME" ]; then
   log "Error: username is required"
   exit 1
 fi
 
 # Set up SSH key
-if [ -n "${SSH_KEY}" ]; then
-  echo "${SSH_KEY}" > "$SSH_KEY_FILE"
+if [ -n "$SSH_KEY" ]; then
+  # Write key with exact formatting preserved
+  echo "$SSH_KEY" > "$SSH_KEY_FILE"
   chmod 600 "$SSH_KEY_FILE"
 else
   log "Error: ssh-key is required"
@@ -55,7 +49,7 @@ log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
   "command": "${INPUT_COMMAND:-deploy}",
-  "app_name": "${APP_NAME}",
+  "app_name": "$APP_NAME",
   "image": "${INPUT_IMAGE}",
   "tag": "${INPUT_TAG:-latest}",
   "domain": "${INPUT_DOMAIN}",
@@ -71,7 +65,7 @@ cat > "$CONFIG_FILE" << EOF
   "use_profiles": ${INPUT_USE_PROFILES:-true},
   "extra_hosts": "${INPUT_EXTRA_HOSTS}",
   "health_check": "${INPUT_HEALTH_CHECK:-/health}",
-  "health_check_timeout": ${INPUT_HEALTH_CHECK_TIMEOUT:-60},
+  "health_check_timeout": "${INPUT_HEALTH_CHECK_TIMEOUT:-60}",
   "health_check_type": "${INPUT_HEALTH_CHECK_TYPE:-auto}",
   "health_check_command": "${INPUT_HEALTH_CHECK_COMMAND}",
   "port_auto_assign": ${INPUT_PORT_AUTO_ASSIGN:-true},
@@ -110,7 +104,7 @@ esac
 
 # Execute deployment via SSH
 log "Executing deployment via SSH..."
-ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" "${USERNAME}@${HOST}" "$DEPLOY_CMD" < "$CONFIG_FILE"
+ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"
 
 # Clean up
 rm -f "$SSH_KEY_FILE"
