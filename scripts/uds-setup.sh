@@ -12,7 +12,7 @@ UDS_BASE_DIR="${UDS_BASE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # Function to install UDS if not already installed
 # This is the single source of truth for UDS installation
 setup_uds() {
-  local uds_repo="${UDS_REPO:-https://github.com/your-org/unified-deployment-system.git}"
+  local uds_repo="${UDS_REPO:-https://github.com/elijahmont3x/unified-deployment-system.git}"
   local uds_version="${UDS_VERSION:-v1.0.0}" # Replace with the desired tag or commit hash
   local target_dir="${1:-$UDS_BASE_DIR}"
 

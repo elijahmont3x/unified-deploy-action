@@ -197,7 +197,7 @@ runs:
           
           # Function to install UDS
           setup_uds() {
-            local uds_repo="https://github.com/your-org/unified-deployment-system.git"
+            local uds_repo="https://github.com/elijahmont3x/unified-deployment-system.git"
             local uds_version="v1.0.0"
             local target_dir="$1"
             
