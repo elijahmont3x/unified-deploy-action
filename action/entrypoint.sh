@@ -32,6 +32,10 @@ APP_NAME="${params[APP_NAME]}"
 HOST="${params[HOST]}"
 USERNAME="${params[USERNAME]}"
 
+# --- Debug Block Start ---
+log "DEBUG: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}', SSH_KEY length=${#params[SSH_KEY]}"
+# --- Debug Block End ---
+
 # Validate required inputs
 if [ -z "$APP_NAME" ]; then
   log "Error: app-name is required"
