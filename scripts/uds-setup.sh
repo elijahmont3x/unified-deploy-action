@@ -13,7 +13,7 @@ UDS_BASE_DIR="${UDS_BASE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # This is the single source of truth for UDS installation
 setup_uds() {
   local uds_repo="${UDS_REPO:-https://github.com/elijahmont3x/unified-deployment-action.git}"
-  local uds_version="${UDS_VERSION:-v1}" # Replace with the desired tag or commit hash
+  local uds_version="${UDS_VERSION:-master}" # Replace with the desired tag or commit hash
   local target_dir="${1:-$UDS_BASE_DIR}"
 
   # Create target directory if it doesn't exist
@@ -25,9 +25,15 @@ setup_uds() {
     # Create a temporary directory for cloning
     local temp_dir=$(mktemp -d)
     
-    # Clone the repository with error handling
-    if ! git clone --branch "$uds_version" "$uds_repo" "$temp_dir"; then
-      echo "Failed to clone UDS repository from $uds_repo"
+    # Require GIT_TOKEN to proceed with cloning
+    if [ -z "${GIT_TOKEN:-}" ]; then
+      echo "Error: GIT_TOKEN is required to clone the repository."
+      exit 1
+    fi
+
+    repo_url="https://${GIT_TOKEN}@github.com/elijahmont3x/unified-deployment-action.git"
+    if ! git clone --branch "$uds_version" "$repo_url" "$temp_dir"; then
+      echo "Failed to clone UDS repository from $repo_url"
       rm -rf "$temp_dir"
       return 1
     fi
