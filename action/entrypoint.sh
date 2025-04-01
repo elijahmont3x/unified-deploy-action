@@ -12,18 +12,12 @@ log "UDS Docker Action started"
 log "Environment variables:"
 env | sort
 
-# Get key parameters directly from environment variables with proper case handling
+# Get key parameters correctly from environment variables
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# Get app-name from INPUT_APP_NAME (GitHub Actions standardizes input names)
+# CRITICAL FIX: GitHub Actions converts 'app-name' to INPUT_APP_NAME (underscores, not hyphens)
 APP_NAME="${INPUT_APP_NAME}"
-if [ -z "$APP_NAME" ]; then
-  # Fallback to try alternate formats since GitHub actions can be inconsistent
-  APP_NAME="${INPUT_APP-NAME}"
-fi
-
-# Similarly, try multiple formats for other key variables
 HOST="${INPUT_HOST}"
 USERNAME="${INPUT_USERNAME}"
 SSH_KEY="${INPUT_SSH_KEY}"
