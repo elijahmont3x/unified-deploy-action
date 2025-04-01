@@ -38,7 +38,7 @@ These workflows are starting points - customize them based on your specific need
 # Example customization
 steps:
   - name: Deploy application
-    uses: elijahmont3x/unified-deployment-action@v1
+    uses: elijahmont3x/unified-deploy-action@v1
     with:
       # Add your custom parameters here
       command: deploy

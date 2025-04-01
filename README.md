@@ -175,7 +175,7 @@ To use UDS as a GitHub Action:
 
 ```yaml
 - name: Deploy with UDS
-  uses: elijahmont3x/unified-deployment-action@v1
+  uses: elijahmont3x/unified-deploy-action@v1
   with:
     command: deploy
     app-name: my-app
