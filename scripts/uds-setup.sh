@@ -32,7 +32,7 @@ setup_uds() {
     fi
 
     # Clone the repository
-    if ! git clone --branch "$uds_version" "${uds_repo/github.com/${GIT_TOKEN}@github.com}" "$temp_dir"; then
+    if ! git clone --branch "$uds_version" "${uds_repo/https:\/\/github.com/https:\/\/${GIT_TOKEN}@github.com}" "$temp_dir"; then
       echo "Failed to clone UDS repository"
       rm -rf "$temp_dir"
       return 1
