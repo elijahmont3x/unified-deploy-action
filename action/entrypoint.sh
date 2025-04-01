@@ -8,21 +8,23 @@ log() {
 
 log "UDS Docker Action started"
 
-# Normalize input parameters - convert all INPUT_ variables 
-# from GitHub Actions hyphenated format to proper variables
+# Normalize input parameters - more efficient approach using bash parameter expansion
 declare -A params
-for var in $(env | grep ^INPUT_ | cut -d= -f1); do
-  # Convert INPUT_NAME-WITH-HYPHENS to NAME_WITH-HYPHENS
-  name=$(echo "$var" | sed 's/^INPUT_//')
-  # Convert hyphens to underscores for shell variable compliance
-  clean_name=$(echo "$name" | tr '-' '_')
-  # Get the value
-  eval "value=\${$var}"
-  # Store normalized name and value
-  params["$clean_name"]="$value"
-  # Export for other scripts
-  export "$clean_name"="$value"
-done
+while IFS= read -r var; do
+  if [[ $var == INPUT_* ]]; then
+    # Get variable name and value directly
+    var_name="${var%%=*}"
+    var_value="${var#*=}"
+    
+    # Convert INPUT_NAME-WITH-HYPHENS to NAME_WITH_HYPHENS
+    clean_name=$(echo "${var_name#INPUT_}" | tr '-' '_')
+    
+    # Store in associative array
+    params["$clean_name"]="$var_value"
+    # Export for other scripts
+    export "$clean_name"="$var_value"
+  fi
+done < <(env)
 
 # Get key parameters with proper fallbacks
 CONFIG_FILE="/opt/uds/configs/action-config.json"
