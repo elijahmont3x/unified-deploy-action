@@ -31,10 +31,9 @@ setup_uds() {
       exit 1
     fi
 
-    # Inject GIT_TOKEN correctly using string substitution
-    repo_url="${uds_repo/https:\/\/github.com/https:\/\/${GIT_TOKEN}@github.com}"
-    if ! git clone --branch "$uds_version" "$repo_url" "$temp_dir"; then
-      echo "Failed to clone UDS repository from $repo_url"
+    # Clone the repository
+    if ! git clone --branch "$uds_version" "${uds_repo/github.com/${GIT_TOKEN}@github.com}" "$temp_dir"; then
+      echo "Failed to clone UDS repository"
       rm -rf "$temp_dir"
       return 1
     fi
