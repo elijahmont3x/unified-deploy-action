@@ -8,33 +8,48 @@ log() {
 
 log "UDS Docker Action started"
 
-# Get ALL raw input values directly from environment variables, 
-# preserving their exact format for ALL variables
+# Debug - print all environment variables to help troubleshoot
+log "Environment variables:"
+env | sort
+
+# Get key parameters directly from environment variables with proper case handling
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# Maintain debug information
-log "DEBUG: APP_NAME='${INPUT_APP_NAME}', HOST='${INPUT_HOST}', USERNAME='${INPUT_USERNAME}', SSH_KEY length=${#INPUT_SSH_KEY}"
+# Get app-name from INPUT_APP_NAME (GitHub Actions standardizes input names)
+APP_NAME="${INPUT_APP_NAME}"
+if [ -z "$APP_NAME" ]; then
+  # Fallback to try alternate formats since GitHub actions can be inconsistent
+  APP_NAME="${INPUT_APP-NAME}"
+fi
 
-# Validate required inputs
-if [ -z "${INPUT_APP_NAME}" ]; then
-  log "Error: app-name is required"
+# Similarly, try multiple formats for other key variables
+HOST="${INPUT_HOST}"
+USERNAME="${INPUT_USERNAME}"
+SSH_KEY="${INPUT_SSH_KEY}"
+
+log "DEBUG: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}', SSH_KEY length=${#SSH_KEY}"
+
+# Validate required inputs with better error messages
+if [ -z "$APP_NAME" ]; then
+  log "Error: app-name is required but was not provided or could not be read"
+  log "Please check your workflow file has 'app-name: your-app-name' properly defined"
   exit 1
 fi
 
-if [ -z "${INPUT_HOST}" ]; then
+if [ -z "${HOST}" ]; then
   log "Error: host is required"
   exit 1
 fi
 
-if [ -z "${INPUT_USERNAME}" ]; then
+if [ -z "${USERNAME}" ]; then
   log "Error: username is required"
   exit 1
 fi
 
 # Set up SSH key
-if [ -n "${INPUT_SSH_KEY}" ]; then
-  echo "${INPUT_SSH_KEY}" > "$SSH_KEY_FILE"
+if [ -n "${SSH_KEY}" ]; then
+  echo "${SSH_KEY}" > "$SSH_KEY_FILE"
   chmod 600 "$SSH_KEY_FILE"
 else
   log "Error: ssh-key is required"
@@ -46,7 +61,7 @@ log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
   "command": "${INPUT_COMMAND:-deploy}",
-  "app_name": "${INPUT_APP_NAME}",
+  "app_name": "${APP_NAME}",
   "image": "${INPUT_IMAGE}",
   "tag": "${INPUT_TAG:-latest}",
   "domain": "${INPUT_DOMAIN}",
@@ -101,7 +116,7 @@ esac
 
 # Execute deployment via SSH
 log "Executing deployment via SSH..."
-ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" "${INPUT_USERNAME}@${INPUT_HOST}" "$DEPLOY_CMD" < "$CONFIG_FILE"
+ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" "${USERNAME}@${HOST}" "$DEPLOY_CMD" < "$CONFIG_FILE"
 
 # Clean up
 rm -f "$SSH_KEY_FILE"
