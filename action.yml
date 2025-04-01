@@ -197,8 +197,8 @@ runs:
           
           # Function to install UDS
           setup_uds() {
-            local uds_repo="https://github.com/elijahmont3x/unified-deployment-system.git"
-            local uds_version="v1.0.0"
+            local uds_repo="https://${GIT_TOKEN}@github.com/elijahmont3x/unified-deployment-system.git"
+            local uds_version="master" # TODO: Make this configurable
             local target_dir="$1"
             
             # Create target directory if it doesn't exist
