@@ -47,29 +47,38 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-# Set up SSH key with focused approach to fix libcrypto error
+# Set up SSH with a path the container user can write to
 if [ -n "$SSH_KEY" ]; then
-  log "Setting up SSH key..."
+  log "Setting up SSH with container-friendly approach..."
   
-  # Create SSH directory if it doesn't exist
-  mkdir -p ~/.ssh
-  chmod 700 ~/.ssh
+  # Use /tmp directory which should be writable by any user
+  SSH_DIR="/tmp/.ssh"
+  mkdir -p "$SSH_DIR"
+  chmod 700 "$SSH_DIR"
   
   # Write key directly without any processing
-  echo "$SSH_KEY" > ~/.ssh/id_rsa
-  chmod 600 ~/.ssh/id_rsa
+  printf "%s" "$SSH_KEY" > "$SSH_DIR/id_rsa"
+  chmod 600 "$SSH_DIR/id_rsa"
   
-  # Configure SSH to use this key and bypass strict host checking
-  cat > ~/.ssh/config << EOF
-Host *
+  # Set minimal SSH config in the writable location
+  cat > "$SSH_DIR/config" << EOF
+Host $HOST
   StrictHostKeyChecking no
   UserKnownHostsFile=/dev/null
-  IdentityFile ~/.ssh/id_rsa
+  IdentityFile $SSH_DIR/id_rsa
+  LogLevel ERROR
 EOF
-  chmod 600 ~/.ssh/config
+  chmod 600 "$SSH_DIR/config"
   
-  # Use the fixed path for SSH operations
-  SSH_KEY_FILE=~/.ssh/id_rsa
+  # Set the SSH command to use our custom config
+  SSH_COMMAND="ssh -F $SSH_DIR/config"
+  
+  # Test SSH connection
+  if ! $SSH_COMMAND -o BatchMode=yes -o ConnectTimeout=5 "$USERNAME@$HOST" echo "SSH connection test" > /dev/null 2>&1; then
+    log "WARNING: SSH connection test failed. Continuing anyway..."
+  else
+    log "SSH connection test successful"
+  fi
 else
   log "Error: ssh-key is required"
   exit 1
@@ -133,11 +142,11 @@ case "${INPUT_COMMAND:-deploy}" in
     ;;
 esac
 
-# Execute deployment via SSH using the configured SSH client
+# Execute deployment via SSH using our custom SSH command
 log "Executing deployment via SSH..."
-ssh "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"
+$SSH_COMMAND "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"
 
 # Clean up
-rm -f "$SSH_KEY_FILE"
+rm -rf "$SSH_DIR"
 
 log "UDS Docker Action completed successfully"
