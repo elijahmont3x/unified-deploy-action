@@ -117,7 +117,7 @@ else
   exit 1
 fi
 
-# Create config file from direct inputs
+# Create config file from direct inputs - fix JSON formatting issues
 log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
@@ -138,7 +138,7 @@ cat > "$CONFIG_FILE" << EOF
   "use_profiles": ${INPUT_USE-PROFILES:-true},
   "extra_hosts": "${INPUT_EXTRA-HOSTS}",
   "health_check": "${INPUT_HEALTH-CHECK:-/health}",
-  "health_check_timeout": ${INPUT_HEALTH-CHECK-TIMEOUT:-60}",
+  "health_check_timeout": ${INPUT_HEALTH-CHECK-TIMEOUT:-60},
   "health_check_type": "${INPUT_HEALTH-CHECK-TYPE:-auto}",
   "health_check_command": "${INPUT_HEALTH-CHECK-COMMAND}",
   "port_auto_assign": ${INPUT_PORT-AUTO-ASSIGN:-true},
@@ -157,19 +157,30 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-# Prepare remote deployment command with script installation check
+# Validate JSON config before using it
+if ! jq . "$CONFIG_FILE" > /dev/null 2>&1; then
+  log "ERROR: Generated JSON config is invalid"
+  jq . "$CONFIG_FILE" || cat "$CONFIG_FILE"
+  exit 1
+fi
+
+# Prepare remote deployment command with improved script installation
 log "Preparing remote deployment command..."
 DEPLOY_CMD=""
 WORKING_DIR="${INPUT_WORKING_DIR:-/opt/uds}"
 
-# First check if scripts exist, install if needed
+# Improved installation script with better plugin handling
 SETUP_CMD="if [ ! -f \"$WORKING_DIR/uds-deploy.sh\" ]; then"
 SETUP_CMD+=" echo \"UDS scripts not found, installing...\";"
 SETUP_CMD+=" mkdir -p $WORKING_DIR/scripts $WORKING_DIR/plugins;"
 SETUP_CMD+=" curl -s -L https://github.com/elijahmont3x/unified-deploy-action/archive/refs/heads/master.tar.gz | tar xz -C /tmp;"
 SETUP_CMD+=" cp -r /tmp/unified-deploy-action-master/scripts/* $WORKING_DIR/;"
+# Ensure plugin directory structure is correct
+SETUP_CMD+=" mkdir -p $WORKING_DIR/plugins;"
 SETUP_CMD+=" cp -r /tmp/unified-deploy-action-master/plugins/* $WORKING_DIR/plugins/;"
+# Make all scripts executable, including plugin scripts
 SETUP_CMD+=" chmod +x $WORKING_DIR/*.sh;"
+SETUP_CMD+=" chmod +x $WORKING_DIR/plugins/*.sh 2>/dev/null || true;"
 SETUP_CMD+=" rm -rf /tmp/unified-deploy-action-master;"
 SETUP_CMD+=" fi"
 
