@@ -8,18 +8,26 @@ log() {
 
 log "UDS Docker Action started"
 
-# Debug: show all inputs
+# Debug show inputs for troubleshooting
 env | grep ^INPUT_ || echo "No INPUT_ variables found"
 
 # Define important paths
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# CRITICAL FIX: Properly handle hyphenated variables in GitHub Actions
-APP_NAME=$(eval echo "\$INPUT_APP-NAME")
-HOST=$(eval echo "\$INPUT_HOST")
-USERNAME=$(eval echo "\$INPUT_USERNAME")
-SSH_KEY=$(eval echo "\$INPUT_SSH-KEY")
+# Access variables directly with proper escaping for hyphenated names
+# Escape the hyphen properly in shell variable names
+APP_NAME="${INPUT_APP_NAME}"
+# If not found with underscore, try with direct name
+if [ -z "$APP_NAME" ]; then
+  APP_NAME=$(printenv 'INPUT_APP-NAME')
+fi
+
+HOST="${INPUT_HOST}"
+USERNAME="${INPUT_USERNAME}"
+
+# For SSH key, directly access the raw variable
+SSH_KEY=$(printenv 'INPUT_SSH-KEY')
 
 log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}', SSH_KEY length=${#SSH_KEY}"
 
