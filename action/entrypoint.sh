@@ -8,15 +8,20 @@ log() {
 
 log "UDS Docker Action started"
 
+# Debug: show all inputs
+env | grep ^INPUT_ || echo "No INPUT_ variables found"
+
 # Define important paths
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# Get variables directly from GitHub Actions environment
+# GitHub Actions provides hyphenated inputs with underscores in variable names
 APP_NAME="${INPUT_APP_NAME}"
 HOST="${INPUT_HOST}"
 USERNAME="${INPUT_USERNAME}"
 SSH_KEY="${INPUT_SSH_KEY}"
+
+log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}'"
 
 # Validate required inputs
 if [ -z "$APP_NAME" ]; then
@@ -49,7 +54,7 @@ log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
   "command": "${INPUT_COMMAND:-deploy}",
-  "app_name": "$APP_NAME",
+  "app_name": "${INPUT_APP_NAME}",
   "image": "${INPUT_IMAGE}",
   "tag": "${INPUT_TAG:-latest}",
   "domain": "${INPUT_DOMAIN}",
