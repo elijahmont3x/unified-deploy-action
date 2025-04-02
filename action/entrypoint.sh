@@ -16,14 +16,10 @@ CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
 # CRITICAL FIX: Properly handle hyphenated variables in GitHub Actions
-# We need to escape the dash character in bash variable names
-APP_NAME="${!INPUT_APP_NAME}"
-[ -z "$APP_NAME" ] && APP_NAME=$(eval echo "\$INPUT_APP-NAME")
-
-HOST="${!INPUT_HOST}"
-USERNAME="${!INPUT_USERNAME}"
-SSH_KEY="${!INPUT_SSH_KEY}"
-[ -z "$SSH_KEY" ] && SSH_KEY=$(eval echo "\$INPUT_SSH-KEY")
+APP_NAME=$(eval echo "\$INPUT_APP-NAME")
+HOST=$(eval echo "\$INPUT_HOST")
+USERNAME=$(eval echo "\$INPUT_USERNAME")
+SSH_KEY=$(eval echo "\$INPUT_SSH-KEY")
 
 log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}', SSH_KEY length=${#SSH_KEY}"
 
