@@ -47,38 +47,29 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-# Set up SSH key with sanitization detection
+# Set up SSH key with focused approach to fix libcrypto error
 if [ -n "$SSH_KEY" ]; then
-  # Check if the SSH key appears to have been sanitized (contains *****)
-  if [[ "$SSH_KEY" == *"******"* ]]; then
-    log "ERROR: SSH key appears to be sanitized (contains asterisks). This prevents proper authentication."
-    log "Please ensure your SSH key is properly passed as a secret and not logged or sanitized."
-    exit 1
-  fi
+  log "Setting up SSH key..."
   
-  # Write the key with exact formatting preserved using printf to avoid any shell interpretation
-  printf "%s" "$SSH_KEY" > "$SSH_KEY_FILE"
-  chmod 600 "$SSH_KEY_FILE"
+  # Create SSH directory if it doesn't exist
+  mkdir -p ~/.ssh
+  chmod 700 ~/.ssh
   
-  # Verify SSH key format and show details (without revealing the key)
-  if ssh-keygen -l -f "$SSH_KEY_FILE" 2>/dev/null; then
-    log "SSH key is valid"
-  else
-    log "WARNING: SSH key appears invalid, attempting to troubleshoot..."
-    
-    # Check for common SSH key format issues
-    if grep -q "BEGIN OPENSSH PRIVATE KEY" "$SSH_KEY_FILE"; then
-      log "Key uses OpenSSH format"
-    elif grep -q "BEGIN RSA PRIVATE KEY" "$SSH_KEY_FILE"; then
-      log "Key uses RSA PEM format"
-    elif grep -q "BEGIN EC PRIVATE KEY" "$SSH_KEY_FILE"; then
-      log "Key uses EC PEM format"
-    else
-      log "Key doesn't appear to be in a standard format"
-      # Try to identify issue with key format
-      head -n 1 "$SSH_KEY_FILE" | tr -d '\n' | head -c 30 | hexdump -C
-    fi
-  fi
+  # Write key directly without any processing
+  echo "$SSH_KEY" > ~/.ssh/id_rsa
+  chmod 600 ~/.ssh/id_rsa
+  
+  # Configure SSH to use this key and bypass strict host checking
+  cat > ~/.ssh/config << EOF
+Host *
+  StrictHostKeyChecking no
+  UserKnownHostsFile=/dev/null
+  IdentityFile ~/.ssh/id_rsa
+EOF
+  chmod 600 ~/.ssh/config
+  
+  # Use the fixed path for SSH operations
+  SSH_KEY_FILE=~/.ssh/id_rsa
 else
   log "Error: ssh-key is required"
   exit 1
@@ -142,9 +133,9 @@ case "${INPUT_COMMAND:-deploy}" in
     ;;
 esac
 
-# Execute deployment via SSH
+# Execute deployment via SSH using the configured SSH client
 log "Executing deployment via SSH..."
-ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"
+ssh "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"
 
 # Clean up
 rm -f "$SSH_KEY_FILE"
