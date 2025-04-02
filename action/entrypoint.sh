@@ -47,12 +47,41 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-# Set up SSH key
+# Set up SSH key with improved handling
 if [ -n "$SSH_KEY" ]; then
-  # This is a critical fix: we need to use printf to preserve exact formatting 
-  # including newlines of the SSH key
-  printf "%s" "$SSH_KEY" > "$SSH_KEY_FILE"
+  # Write the key using base64 encoding to preserve exact format including newlines
+  # 1. Write to a temp file first
+  echo "$SSH_KEY" > "$SSH_KEY_FILE.base64"
+  
+  # 2. Make sure the SSH key file is empty to start
+  > "$SSH_KEY_FILE"
   chmod 600 "$SSH_KEY_FILE"
+  
+  # 3. Inspect the SSH key for format - output first line for debugging
+  log "DEBUG: SSH key first line: $(head -n1 "$SSH_KEY_FILE.base64" | head -c20)..."
+  
+  # 4. Decode if it looks base64 encoded, otherwise use as-is
+  if [[ $(head -c10 "$SSH_KEY_FILE.base64") == "LS0tLS1CRU" ]]; then
+    log "SSH key appears to be base64 encoded, decoding"
+    cat "$SSH_KEY_FILE.base64" | base64 -d > "$SSH_KEY_FILE"
+  else 
+    log "Using SSH key as-is"
+    cat "$SSH_KEY_FILE.base64" > "$SSH_KEY_FILE"
+  fi
+  
+  # 5. Secure the key file
+  chmod 600 "$SSH_KEY_FILE"
+  
+  # 6. Clean up
+  rm -f "$SSH_KEY_FILE.base64"
+  
+  # 7. Verify key format
+  if ! ssh-keygen -l -f "$SSH_KEY_FILE" > /dev/null 2>&1; then
+    log "Warning: SSH key appears to be in invalid format, attempting to fix"
+    # Try to fix common issues like line breaks or extra whitespace
+    sed -i 's/\\n/\n/g' "$SSH_KEY_FILE"
+    chmod 600 "$SSH_KEY_FILE"
+  fi
 else
   log "Error: ssh-key is required"
   exit 1
