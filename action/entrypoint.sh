@@ -15,14 +15,17 @@ env | grep ^INPUT_ || echo "No INPUT_ variables found"
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# CRITICAL FIX: GitHub Actions preserves hyphens in environment variable names
-# So app-name becomes INPUT_APP-NAME, not INPUT_APP_NAME
-APP_NAME="${INPUT_APP-NAME}"
-HOST="${INPUT_HOST}"
-USERNAME="${INPUT_USERNAME}"
-SSH_KEY="${INPUT_SSH-KEY}"
+# CRITICAL FIX: Properly handle hyphenated variables in GitHub Actions
+# We need to escape the dash character in bash variable names
+APP_NAME="${!INPUT_APP_NAME}"
+[ -z "$APP_NAME" ] && APP_NAME=$(eval echo "\$INPUT_APP-NAME")
 
-log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}'"
+HOST="${!INPUT_HOST}"
+USERNAME="${!INPUT_USERNAME}"
+SSH_KEY="${!INPUT_SSH_KEY}"
+[ -z "$SSH_KEY" ] && SSH_KEY=$(eval echo "\$INPUT_SSH-KEY")
+
+log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}', SSH_KEY length=${#SSH_KEY}"
 
 # Validate required inputs
 if [ -z "$APP_NAME" ]; then
@@ -42,8 +45,9 @@ fi
 
 # Set up SSH key
 if [ -n "$SSH_KEY" ]; then
-  # Write key with exact formatting preserved
-  echo "$SSH_KEY" > "$SSH_KEY_FILE"
+  # This is a critical fix: we need to use printf to preserve exact formatting 
+  # including newlines of the SSH key
+  printf "%s" "$SSH_KEY" > "$SSH_KEY_FILE"
   chmod 600 "$SSH_KEY_FILE"
 else
   log "Error: ssh-key is required"
