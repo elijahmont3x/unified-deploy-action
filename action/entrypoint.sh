@@ -157,21 +157,32 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-# Prepare remote deployment command
+# Prepare remote deployment command with script installation check
 log "Preparing remote deployment command..."
 DEPLOY_CMD=""
 WORKING_DIR="${INPUT_WORKING_DIR:-/opt/uds}"
 
+# First check if scripts exist, install if needed
+SETUP_CMD="if [ ! -f \"$WORKING_DIR/uds-deploy.sh\" ]; then"
+SETUP_CMD+=" echo \"UDS scripts not found, installing...\";"
+SETUP_CMD+=" mkdir -p $WORKING_DIR/scripts $WORKING_DIR/plugins;"
+SETUP_CMD+=" curl -s -L https://github.com/elijahmont3x/unified-deploy-action/archive/refs/heads/master.tar.gz | tar xz -C /tmp;"
+SETUP_CMD+=" cp -r /tmp/unified-deploy-action-master/scripts/* $WORKING_DIR/;"
+SETUP_CMD+=" cp -r /tmp/unified-deploy-action-master/plugins/* $WORKING_DIR/plugins/;"
+SETUP_CMD+=" chmod +x $WORKING_DIR/*.sh;"
+SETUP_CMD+=" rm -rf /tmp/unified-deploy-action-master;"
+SETUP_CMD+=" fi"
+
 # Handle different commands
 case "${INPUT_COMMAND:-deploy}" in
   setup)
-    DEPLOY_CMD="bash -c 'mkdir -p $WORKING_DIR && cat > $WORKING_DIR/config.json' && cd $WORKING_DIR && ./uds-setup.sh --config=config.json"
+    DEPLOY_CMD="bash -c '$SETUP_CMD && mkdir -p $WORKING_DIR && cat > $WORKING_DIR/config.json' && cd $WORKING_DIR && ./uds-setup.sh --config=config.json"
     ;;
   cleanup)
-    DEPLOY_CMD="bash -c 'mkdir -p $WORKING_DIR && cat > $WORKING_DIR/config.json' && cd $WORKING_DIR && ./uds-cleanup.sh --config=config.json"
+    DEPLOY_CMD="bash -c '$SETUP_CMD && mkdir -p $WORKING_DIR && cat > $WORKING_DIR/config.json' && cd $WORKING_DIR && ./uds-cleanup.sh --config=config.json"
     ;;
   *)
-    DEPLOY_CMD="bash -c 'mkdir -p $WORKING_DIR && cat > $WORKING_DIR/config.json' && cd $WORKING_DIR && ./uds-deploy.sh --config=config.json"
+    DEPLOY_CMD="bash -c '$SETUP_CMD && mkdir -p $WORKING_DIR && cat > $WORKING_DIR/config.json' && cd $WORKING_DIR && ./uds-deploy.sh --config=config.json"
     ;;
 esac
 
