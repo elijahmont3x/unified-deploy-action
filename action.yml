@@ -134,3 +134,11 @@ inputs:
 runs:
   using: 'docker'
   image: 'Dockerfile'
+
+outputs:
+  deployment_url:
+    description: 'URL where the deployed application is accessible'
+  version:
+    description: 'Deployed version tag'
+  status:
+    description: 'Deployment status (success/failure)'

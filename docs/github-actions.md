@@ -4,7 +4,7 @@ This guide explains how to use the UDS Docker-based GitHub Action for deployment
 
 ## Overview
 
-UDS now provides a Docker-based GitHub Action that handles:
+UDS provides a Docker-based GitHub Action that handles:
 1. Processing configuration locally in an isolated container
 2. Deploying applications securely via SSH
 3. Managing SSL, routing, and container lifecycles
@@ -59,39 +59,25 @@ UDS supports the following commands:
 - **setup**: Set up the deployment environment
 - **cleanup**: Remove deployed applications
 
-## Example Workflows
+## Workflow Patterns
 
-### Multi-Stage Deployment
+UDS supports several workflow patterns to meet different deployment needs. Our [examples directory](../examples/) contains ready-to-use templates:
 
-```yaml
-- name: Deploy to staging
-  uses: elijahmont3x/unified-deploy-action@master
-  with:
-    command: deploy
-    app-name: my-app-staging
-    image: ghcr.io/myorg/myapp
-    tag: ${{ github.sha }}
-    domain: staging.example.com
-    host: ${{ secrets.DEPLOY_HOST }}
-    username: ${{ secrets.DEPLOY_USER }}
-    ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+### [Basic Workflow](../examples/basic-workflow.yml)
+Simple deployment flow for a single service.
 
-- name: Test staging
-  run: |
-    curl -f https://staging.example.com/health || exit 1
+### [Advanced Workflow](../examples/advanced-workflow.yml)
+Multi-stage deployment with staging and production environments.
 
-- name: Deploy to production
-  uses: elijahmont3x/unified-deploy-action@master
-  with:
-    command: deploy
-    app-name: my-app
-    image: ghcr.io/myorg/myapp
-    tag: ${{ github.sha }}
-    domain: example.com
-    host: ${{ secrets.DEPLOY_HOST }}
-    username: ${{ secrets.DEPLOY_USER }}
-    ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
-```
+### [Monorepo Workflow](../examples/monorepo-workflow.yml)
+Selective deployment of components in a monorepo structure.
+
+### [Robust Workflow](../examples/robust-workflow.yml)
+Production-grade deployment with dependencies, persistence, and extensive health checking.
+
+For detailed explanations of these patterns, see the [Workflow Patterns Guide](workflow-patterns.md).
+
+## Common Scenarios
 
 ### Using Plugins
 
@@ -112,6 +98,50 @@ UDS supports the following commands:
     ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
 ```
 
+### Deploying with Persistent Storage
+
+```yaml
+- name: Deploy database with persistence
+  uses: elijahmont3x/unified-deploy-action@master
+  with:
+    command: deploy
+    app-name: my-database
+    image: postgres:13
+    tag: latest
+    domain: example.com
+    port: 5432
+    persistent: 'true'
+    volumes: postgres-data:/var/lib/postgresql/data
+    plugins: persistence-manager
+    host: ${{ secrets.DEPLOY_HOST }}
+    username: ${{ secrets.DEPLOY_USER }}
+    ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+    env-vars: >
+      {
+        "POSTGRES_USER": "${{ secrets.DB_USER }}",
+        "POSTGRES_PASSWORD": "${{ secrets.DB_PASSWORD }}",
+        "POSTGRES_DB": "${{ secrets.DB_NAME }}"
+      }
+```
+
+### Multi-Stage Deployment with Verification
+
+```yaml
+- name: Deploy with multi-stage and verification
+  uses: elijahmont3x/unified-deploy-action@master
+  with:
+    command: deploy
+    app-name: my-app
+    image: my-app-image:${{ github.sha }}
+    domain: example.com
+    multi-stage: 'true'
+    health-check: '/health'
+    health-check-timeout: 120
+    host: ${{ secrets.DEPLOY_HOST }}
+    username: ${{ secrets.DEPLOY_USER }}
+    ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+```
+
 ## Implementation Details
 
 The UDS GitHub Action is implemented as a Docker-based action that:
@@ -125,7 +155,7 @@ This design ensures reliability, security, and consistency across different envi
 
 ## Configuration Options
 
-UDS supports a wide range of configuration options. See the [configuration reference](configuration.md) for details.
+UDS supports a wide range of configuration options. See the [Configuration Reference](configuration.md) for details.
 
 ## Troubleshooting
 
@@ -134,11 +164,16 @@ UDS supports a wide range of configuration options. See the [configuration refer
 1. **SSH Connection Failed**
    - Verify that your SSH key is correct
    - Ensure your server allows SSH connections
+   - Check that the user has appropriate permissions
 
 2. **Deployment Failed**
    - Check logs using `--log-level=debug`
    - Ensure Docker is installed on your deployment server
+   - Verify image exists and is accessible
 
 3. **SSL Certificate Issues**
    - Provide a valid email with `ssl-email`
    - Make sure your domain is correctly configured
+   - Check DNS settings for your domain
+
+For more detailed troubleshooting, see the [Troubleshooting Guide](troubleshooting.md).

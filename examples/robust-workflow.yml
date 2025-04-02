@@ -1,0 +1,210 @@
+name: Robust Multi-Service Deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Generate version identifier
+        id: version
+        run: echo "value=$(date +'%Y%m%d%H%M%S')-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push Database image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./database
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/database:${{ steps.version.outputs.value }},ghcr.io/${{ github.repository }}/database:latest
+      
+      - name: Build and push API image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./api
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/api:${{ steps.version.outputs.value }},ghcr.io/${{ github.repository }}/api:latest
+      
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/frontend:${{ steps.version.outputs.value }},ghcr.io/${{ github.repository }}/frontend:latest
+  
+  preflight:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run pre-flight checks
+        uses: elijahmont3x/unified-deploy-action@master
+        with:
+          command: setup
+          app-name: preflight-check
+          domain: ${{ secrets.DOMAIN_NAME }}
+          check-system: 'true'
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+  
+  deploy-database:
+    needs: [build, preflight]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.deploy.outputs.status }}
+    steps:
+      - name: Deploy database
+        id: deploy
+        uses: elijahmont3x/unified-deploy-action@master
+        with:
+          command: deploy
+          app-name: app-database
+          image: ghcr.io/${{ github.repository }}/database
+          tag: ${{ needs.build.outputs.version }}
+          domain: ${{ secrets.DOMAIN_NAME }}
+          port: 5432
+          persistent: true
+          multi-stage: true
+          check-dependencies: true
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          plugins: persistence-manager,postgres-manager
+          health-check-type: database
+          health-check-timeout: 90
+          env-vars: >
+            {
+              "POSTGRES_USER": "${{ secrets.DB_USER }}",
+              "POSTGRES_PASSWORD": "${{ secrets.DB_PASSWORD }}",
+              "POSTGRES_DB": "${{ secrets.DB_NAME }}"
+            }
+          pg-migration-enabled: 'true'
+          pg-connection-string: 'postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@localhost:5432/${{ secrets.DB_NAME }}'
+          pg-migration-script: './database/migrations/run.sh'
+  
+  deploy-api:
+    needs: [build, deploy-database]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.deploy.outputs.status }}
+    steps:
+      - name: Wait for database to be ready
+        run: |
+          echo "Ensuring database is fully ready before API deployment..."
+          sleep 15
+      
+      - name: Deploy API service
+        id: deploy
+        uses: elijahmont3x/unified-deploy-action@master
+        with:
+          command: deploy
+          app-name: app-api
+          image: ghcr.io/${{ github.repository }}/api
+          tag: ${{ needs.build.outputs.version }}
+          domain: ${{ secrets.DOMAIN_NAME }}
+          route-type: subdomain
+          route: api
+          port: 3000
+          multi-stage: true
+          check-dependencies: true
+          ssl: true
+          ssl-email: ${{ secrets.SSL_EMAIL }}
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          plugins: ssl-manager,telegram-notifier
+          health-check: /health
+          health-check-timeout: 90
+          env-vars: >
+            {
+              "NODE_ENV": "production",
+              "DATABASE_URL": "postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@app-database:5432/${{ secrets.DB_NAME }}"
+            }
+  
+  deploy-frontend:
+    needs: [build, deploy-api]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy frontend
+        uses: elijahmont3x/unified-deploy-action@master
+        with:
+          command: deploy
+          app-name: app-frontend
+          image: ghcr.io/${{ github.repository }}/frontend
+          tag: ${{ needs.build.outputs.version }}
+          domain: ${{ secrets.DOMAIN_NAME }}
+          route-type: path
+          route: /
+          port: 80
+          multi-stage: true
+          ssl: true
+          ssl-email: ${{ secrets.SSL_EMAIL }}
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          plugins: ssl-manager,route-manager
+          health-check-type: http
+          env-vars: >
+            {
+              "API_URL": "https://api.${{ secrets.DOMAIN_NAME }}"
+            }
+  
+  verify:
+    needs: [deploy-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify deployment with intelligent polling
+        run: |
+          function check_endpoint() {
+            local url="$1"
+            local max_attempts="$2"
+            local wait_time="$3"
+            local attempt=1
+            
+            echo "Verifying endpoint: $url"
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt of $max_attempts..."
+              if curl -s -f "$url" > /dev/null; then
+                echo "✅ Success: $url is accessible"
+                return 0
+              fi
+              
+              attempt=$((attempt + 1))
+              sleep $wait_time
+              # Exponential backoff
+              wait_time=$((wait_time + wait_time/2))
+            done
+            
+            echo "❌ Error: $url could not be reached after $max_attempts attempts"
+            return 1
+          }
+          
+          # Check API health endpoint with exponential backoff
+          check_endpoint "https://api.${{ secrets.DOMAIN_NAME }}/health" 8 5 || exit 1
+          
+          # Check frontend is accessible
+          check_endpoint "https://${{ secrets.DOMAIN_NAME }}/" 5 3 || exit 1
+          
+          echo "Deployment verification completed successfully! 🚀"

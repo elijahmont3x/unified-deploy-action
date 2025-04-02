@@ -24,15 +24,23 @@ A complete CI/CD pipeline with staging and production environments. Includes:
 - Automated release tagging
 - Comprehensive notification system
 
-## Choosing the Right Workflow
+### 4. Robust Workflow (`robust-workflow.yml`)
+A production-ready workflow with additional reliability features:
+- Database deployment with migrations
+- Health checks with exponential backoff
+- Dependency sequencing
+- Intelligent service orchestration
 
-- **Start Simple**: For new projects, begin with the basic workflow
-- **Multiple Components**: Use the monorepo workflow when you have distinct applications in the same repository
-- **Production Pipeline**: Use the advanced workflow when you need a full CI/CD pipeline with proper staging and testing
+## How to Use These Examples
+
+1. Copy the appropriate example to your `.github/workflows/` directory
+2. Customize the workflow for your specific needs (see [Customization](#customization) below)
+3. Configure the required secrets in your GitHub repository settings
 
 ## Customization
 
-These workflows are starting points - customize them based on your specific needs:
+These workflows are starting points - customize them based on your specific needs.
+For detailed configuration options, see our [Configuration Reference](../docs/configuration.md).
 
 ```yaml
 # Example customization
@@ -46,11 +54,11 @@ steps:
       # Add other settings specific to your needs
 ```
 
-## Docker-Based Action Benefits
+## Related Documentation
 
-The examples in this directory use our Docker-based GitHub Action (v1) which provides:
+For more information on using UDS with GitHub Actions, see:
 
-1. **Consistent Environment**: The action runs in a controlled container environment
-2. **Better Security**: All sensitive operations are isolated
-3. **Reduced Dependencies**: No need to install tools on the GitHub runner
-4. **Simpler Integration**: Configuration processed locally before remote execution
+- [GitHub Actions Integration Guide](../docs/github-actions.md) - Detailed guide on using UDS with GitHub Actions
+- [Configuration Reference](../docs/configuration.md) - Complete reference of all configuration options
+- [Troubleshooting Guide](../docs/troubleshooting.md) - Solutions to common issues
+- [UDS Architecture](../docs/architecture.md) - Understanding how UDS works

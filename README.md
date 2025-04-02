@@ -91,24 +91,29 @@ Create a configuration file like this:
 }
 ```
 
-### Key Configuration Options
+For a complete reference of all configuration options, see the [Configuration Reference](docs/configuration.md).
 
-| Option | Description |
-|--------|-------------|
-| `app_name` | The name of your application |
-| `image` | Docker image to deploy (comma-separated for multiple containers) |
-| `tag` | Docker image tag (default: latest) |
-| `domain` | Primary domain for the application |
-| `route_type` | Routing type: "path" or "subdomain" |
-| `route` | Path or subdomain prefix |
-| `port` | Container port(s) to expose (can use host:container format) |
-| `ssl` | Enable SSL/TLS (true/false) |
-| `ssl_email` | Email for Let's Encrypt registration |
-| `ssl_wildcard` | Enable wildcard certificates (requires DNS validation) |
-| `health_check` | Health check endpoint path |
-| `health_check_type` | Health check type (auto, http, tcp, database, container, etc.) |
-| `port_auto_assign` | Automatically resolve port conflicts |
-| `plugins` | Comma-separated list of plugins to activate |
+## Documentation
+
+### Core Documentation
+- [Architecture Guide](docs/architecture.md) - How UDS works and its design principles
+- [Configuration Reference](docs/configuration.md) - Complete reference for all config options
+- [API Reference](docs/api-reference.md) - Function reference for scripting and development
+- [Plugin Development Guide](docs/plugin-development.md) - Creating custom plugins
+
+### Usage Guides
+- [GitHub Actions Guide](docs/github-actions.md) - Using UDS with GitHub Actions
+- [Workflow Patterns](docs/workflow-patterns.md) - Common deployment patterns
+- [Monitoring Integration Guide](docs/monitoring.md) - Integrating with monitoring tools
+- [Security Best Practices](docs/security.md) - Security recommendations
+- [Troubleshooting Guide](docs/troubleshooting.md) - Solving common issues
+
+### Examples
+Our [examples directory](examples/) contains ready-to-use workflow templates for:
+- Basic single-service deployment
+- Monorepo multi-service deployment
+- Advanced staging-to-production pipeline
+- Robust production deployment with dependencies
 
 ## Plugins
 
@@ -121,58 +126,11 @@ UDS supports a modular plugin system:
 - **Telegram Notifier**: Sends deployment notifications via Telegram
 - **Security Manager**: Implements additional security measures
 
-## Advanced Features
-
-### Multi-Stage Deployment
-
-Multi-stage deployment follows this process:
-1. **Validation**: Checks dependencies and requirements
-2. **Preparation**: Prepares configuration files and directories
-3. **Deployment**: Deploys to a staging environment
-4. **Cutover**: Swaps staging to production with minimal downtime
-5. **Verification**: Performs health checks to verify deployment success
-
-### Wildcard SSL Certificates
-
-UDS supports wildcard SSL certificates:
-
-```json
-{
-  "ssl": true,
-  "ssl_email": "admin@example.com",
-  "ssl_wildcard": true,
-  "ssl_dns_provider": "cloudflare",
-  "domain": "example.com"
-}
-```
-
-This creates a certificate for `*.example.com` that works with all subdomains.
-
-### Intelligent Port Management
-
-UDS automatically handles port conflicts by:
-1. Checking if configured ports are available
-2. Finding alternative ports when conflicts occur
-3. Supporting host:container port mapping format
-
-## Monitoring Your Deployment
-
-UDS provides deployment verification via advanced health checks, and you can integrate with:
-
-- **Prometheus + Grafana**: For metrics collection and visualization
-- **ELK Stack**: For aggregating and analyzing logs
-- **Datadog/New Relic**: For APM and infrastructure monitoring
-
-See our [monitoring integration guide](docs/monitoring.md) for detailed setup instructions.
-
 ## GitHub Actions Integration
 
 UDS provides a Docker-based GitHub Action for seamless integration with CI/CD pipelines. The action runs in its own container, ensuring consistency and isolation.
 
-### Using as a GitHub Action
-
-To use UDS as a GitHub Action:
-
+Example usage:
 ```yaml
 - name: Deploy with UDS
   uses: elijahmont3x/unified-deploy-action@master
@@ -187,26 +145,7 @@ To use UDS as a GitHub Action:
     ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
 ```
 
-## Future Enhancements
-
-UDS is continuously evolving with planned enhancements:
-
-1. **Parallel Deployments** - Support for deploying to multiple hosts simultaneously for high-availability environments
-2. **Enhanced Error Recovery** - Automatic retry mechanisms for intermittent infrastructure failures
-3. **Detailed Progress Reporting** - Real-time progress indicators during long-running deployments
-4. **Custom Templates** - User-provided templates for configurations and deployment artifacts
-5. **Blue/Green Deployments** - Zero-downtime deployments with traffic shifting controls
-6. **Extended Plugin API** - Enhanced plugin framework with better event hooks and data sharing
-
-Contributions addressing these areas are welcome.
-
-## Documentation
-
-- [Monitoring Integration Guide](docs/monitoring.md)
-- [Plugin Development Guide](docs/plugin-development.md)
-- [Configuration Reference](docs/configuration.md)
-- [Security Best Practices](docs/security.md)
-- [GitHub Actions Guide](docs/github-actions.md)
+For detailed GitHub Actions usage, see our [GitHub Actions Guide](docs/github-actions.md) and [example workflows](examples/).
 
 ## License
 

@@ -87,13 +87,28 @@ uds_parse_args() {
   fi
 }
 
-# Check if all dependencies are satisfied
+# Enhanced check_deploy_dependencies with improved error handling
 uds_check_deploy_dependencies() {
   local app_name="$1"
   local image="$2"
   local tag="$3"
   
   uds_log "Checking dependencies for $app_name" "info"
+  
+  # System check - ensure Docker is running
+  if ! docker info &>/dev/null; then
+    uds_log "Docker is not running or not accessible" "error"
+    return 1
+  fi
+  
+  # Check disk space pre-emptively
+  local required_space=1000 # 1GB for safety
+  local available_space=$(df -m "$APP_DIR" | awk 'NR==2 {print $4}')
+  
+  if [ "$available_space" -lt "$required_space" ]; then
+    uds_log "Insufficient disk space: ${available_space}MB available, ${required_space}MB required" "error"
+    return 1
+  fi
   
   # Check if image exists or can be pulled
   uds_log "Checking if image $image:$tag is available" "debug"
@@ -106,8 +121,18 @@ uds_check_deploy_dependencies() {
     fi
   fi
   
-  # Check for multi-container dependencies
+  # Network connectivity check for multi-container setups
   if [[ "$image" == *","* ]]; then
+    uds_log "Checking multi-container network connectivity" "info"
+    if ! docker network ls | grep -q "${app_name}-network"; then
+      uds_log "Creating network for $app_name" "info"
+      if ! docker network create "${app_name}-network"; then
+        uds_log "Failed to create network for $app_name" "error"
+        return 1
+      fi
+    fi
+    
+    # Check each image in the multi-container setup
     IFS=',' read -ra IMAGES <<< "$image"
     
     for img in "${IMAGES[@]}"; do
@@ -121,11 +146,17 @@ uds_check_deploy_dependencies() {
     done
   fi
   
-  # Check if ports are available
-  local resolved_port=$(uds_resolve_port_conflicts "$PORT" "$app_name")
+  # Check if ports are available with better error reporting
+  local resolved_port=$(uds_resolve_port_conflicts "$PORT" "$APP_NAME")
   if [ -z "$resolved_port" ]; then
     uds_log "Failed to find available port for $app_name" "error"
+    uds_log "Currently used ports:" "info"
+    netstat -tuln || ss -tuln || echo "Port checking utilities not available"
     return 1
+  elif [ "$resolved_port" != "$PORT" ]; then
+    uds_log "Port $PORT is in use, using port $resolved_port instead" "warning"
+    PORT="$resolved_port"
+    export PORT
   fi
   
   # Check if required directories exist and can be written to
@@ -134,12 +165,9 @@ uds_check_deploy_dependencies() {
     return 1
   fi
   
-  # Check disk space
-  local required_space=500 # 500MB minimum
-  local available_space=$(df -m "$APP_DIR" | awk 'NR==2 {print $4}')
-  
-  if [ "$available_space" -lt "$required_space" ]; then
-    uds_log "Insufficient disk space: ${available_space}MB available, ${required_space}MB required" "error"
+  # Check permissions
+  if [ ! -w "$APP_DIR" ]; then
+    uds_log "No write permission to $APP_DIR" "error"
     return 1
   fi
   
@@ -147,13 +175,47 @@ uds_check_deploy_dependencies() {
   return 0
 }
 
-# Multi-stage deployment process
+# Add automatic rollback for failed deployments
+uds_deploy_with_rollback() {
+  # Deploy with normal flow
+  if uds_deploy_application; then
+    uds_log "Deployment completed successfully" "success"
+    return 0
+  else
+    uds_log "Deployment failed, initiating rollback..." "error"
+    
+    # Check if we have rollback capability (version history)
+    local service_data=$(uds_get_service "$APP_NAME")
+    if [ -z "$service_data" ]; then
+      uds_log "No previous version found, cannot rollback" "error"
+      return 1
+    fi
+    
+    # Extract version history
+    local version_history=$(echo "$service_data" | jq -r '.version_history // []')
+    if [ "$version_history" = "[]" ]; then
+      uds_log "No version history found, cannot rollback" "error"
+      return 1
+    fi
+    
+    # Execute rollback
+    if source "$UDS_BASE_DIR/uds-rollback.sh" && uds_do_rollback --config="$CONFIG_FILE"; then
+      uds_log "Rollback successful" "warning"
+      return 0
+    else
+      uds_log "Rollback failed" "critical"
+      return 1
+    fi
+  fi
+}
+
+# Update multi-stage deployment to use the new rollback functionality
 uds_multi_stage_deployment() {
   local app_name="$1"
   
   uds_log "Starting multi-stage deployment for $app_name" "info"
   
-  # Stage 1: Validation
+  # Stage 1: Validation with enhanced checks
   uds_log "Stage 1: Validation" "info"
   
   # Check dependencies if flag is set
@@ -180,7 +242,7 @@ uds_multi_stage_deployment() {
   mkdir -p "$staging_dir"
   
   # Clone the app configuration
-  cp -a "$APP_DIR"/* "$staging_dir/" || true
+  cp -a "$APP_DIR"/* "$staging_dir/" 2>/dev/null || true
   
   # Save original directory
   local original_dir="$APP_DIR"
@@ -189,7 +251,7 @@ uds_multi_stage_deployment() {
   APP_DIR="$staging_dir"
   export APP_DIR
   
-  # Deploy to staging
+  # Deploy to staging with more robust error handling
   if ! uds_deploy_application; then
     # Restore original directory path for cleanup
     APP_DIR="$original_dir"
@@ -202,33 +264,60 @@ uds_multi_stage_deployment() {
     return 1
   fi
   
-  # Stage 4: Cutover
+  # Stage 4: Cutover with backup
   uds_log "Stage 4: Cutover" "info"
   
-  # Stop original deployment if it exists
+  # Create backup of original for potential rollback
+  if [ -d "$original_dir" ]; then
+    local backup_dir="${original_dir}_backup_$(date +%s)"
+    uds_log "Creating backup at $backup_dir" "info"
+    mv "$original_dir" "$backup_dir" || {
+      uds_log "Failed to create backup, aborting cutover" "error"
+      # Cleanup staging
+      APP_DIR="$original_dir"
+      export APP_DIR
+      rm -rf "$staging_dir"
+      return 1
+    }
+  fi
+  
+  # Stop existing deployment if it exists
   if docker ps -a --filter "name=${APP_NAME}-" | grep -q "${APP_NAME}-"; then
     uds_log "Stopping existing deployment" "info"
     
-    # Check if we have original directory with docker-compose
-    if [ -f "${original_dir}/docker-compose.yml" ]; then
-      (cd "$original_dir" && $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml down) || true
-    else
-      # Try stopping directly
-      docker stop $(docker ps -a -q --filter "name=${APP_NAME}-") 2>/dev/null || true
-      docker rm $(docker ps -a -q --filter "name=${APP_NAME}-") 2>/dev/null || true
+    # Stop with error handling
+    (docker ps -a -q --filter "name=${APP_NAME}-" | xargs docker stop) || {
+      uds_log "Warning: Some containers could not be stopped properly" "warning"
+    }
+  fi
+  
+  # Move staging to production with error handling
+  if ! mv "$staging_dir" "$original_dir"; then
+    uds_log "Failed to move staging to production" "error"
+    
+    # Attempt to restore from backup
+    if [ -d "$backup_dir" ]; then
+      uds_log "Restoring from backup" "warning"
+      rm -rf "$staging_dir" || true
+      mv "$backup_dir" "$original_dir" || {
+        uds_log "Failed to restore backup during rollback" "critical"
+        return 1
+      }
+      
+      # Start the previous version
+      cd "$APP_DIR"
+      if [ -f "$APP_DIR/docker-compose.yml" ]; then
+        $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d || {
+          uds_log "Failed to start previous version" "critical"
+          return 1
+        }
+      fi
+      
+      uds_log "Rollback completed successfully" "warning"
     fi
+    
+    return 1
   fi
-  
-  # Swap staged deployment to production
-  uds_log "Swapping staged deployment to production" "info"
-  
-  # Create backup of original
-  if [ -d "$original_dir" ]; then
-    mv "$original_dir" "${original_dir}_backup_$(date +%s)" || true
-  fi
-  
-  # Move staging to production
-  mv "$staging_dir" "$original_dir"
   
   # Restore original app directory path
   APP_DIR="$original_dir"
@@ -237,7 +326,7 @@ uds_multi_stage_deployment() {
   # Execute post-cutover hooks
   uds_execute_hook "post_cutover" "$APP_NAME" "$APP_DIR"
   
-  # Stage 5: Verification
+  # Stage 5: Verification with enhanced health checking
   uds_log "Stage 5: Verification" "info"
   
   # Determine appropriate health check type if auto-detect is enabled
@@ -247,192 +336,69 @@ uds_multi_stage_deployment() {
     HEALTH_CHECK_TYPE="$detected_type"
   fi
   
-  # Perform health check
+  # Perform health check with exponential backoff
   if [ "$HEALTH_CHECK_TYPE" != "none" ] && type uds_check_health &>/dev/null; then
     local container_name="${APP_NAME}-app"
+    local attempt=1
+    local max_attempts=5
+    local wait_time=10
     
-    if ! uds_check_health "$APP_NAME" "$PORT" "$HEALTH_CHECK" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "$container_name" "$HEALTH_CHECK_COMMAND"; then
-      uds_log "Post-deployment health check failed" "error"
+    while [ $attempt -le $max_attempts ]; do
+      uds_log "Health check attempt $attempt of $max_attempts" "info"
       
-      # Execute health-check-failed hooks
-      uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
+      if uds_check_health "$APP_NAME" "$PORT" "$HEALTH_CHECK" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "$container_name" "$HEALTH_CHECK_COMMAND"; then
+        uds_log "Health check passed on attempt $attempt" "success"
+        
+        # Keep backup for a short time in case of issues
+        if [ -d "$backup_dir" ]; then
+          uds_log "Deployment successful. Backup will be removed automatically after 1 hour." "info"
+          (sleep 3600 && rm -rf "$backup_dir") &
+        fi
+        
+        uds_log "Multi-stage deployment completed successfully" "success"
+        return 0
+      fi
       
-      return 1
+      attempt=$((attempt + 1))
+      uds_log "Health check failed, waiting ${wait_time}s before retry" "warning"
+      sleep $wait_time
+      wait_time=$((wait_time * 2)) # Exponential backoff
+    done
+    
+    uds_log "Health check failed after $max_attempts attempts, rolling back" "error"
+    
+    # Execute health-check-failed hooks
+    uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
+    
+    # Rollback to previous version
+    if [ -d "$backup_dir" ]; then
+      uds_log "Rolling back to previous version" "warning"
+      rm -rf "$APP_DIR" || true
+      mv "$backup_dir" "$APP_DIR" || {
+        uds_log "Failed to restore backup during rollback" "critical"
+        return 1
+      }
+      
+      # Start the previous version
+      cd "$APP_DIR"
+      if [ -f "$APP_DIR/docker-compose.yml" ]; then
+        $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d || {
+          uds_log "Failed to start previous version" "critical"
+          return 1
+        }
+      fi
+      
+      uds_log "Rollback completed successfully" "warning"
     fi
+    
+    return 1
   fi
   
   uds_log "Multi-stage deployment completed successfully" "success"
   return 0
 }
 
-# Prepare the deployment environment
-uds_prepare_deployment() {
-  uds_log "Preparing deployment for $APP_NAME" "info"
-  
-  # Create app directory
-  mkdir -p "$APP_DIR"
-  
-  # Execute pre-deployment hooks
-  uds_execute_hook "pre_deploy" "$APP_NAME" "$APP_DIR"
-  
-  # Resolve port conflicts if auto-assign is enabled
-  if [ "${PORT_AUTO_ASSIGN:-true}" = "true" ]; then
-    local resolved_port=$(uds_resolve_port_conflicts "$PORT" "$APP_NAME")
-    if [ -n "$resolved_port" ]; then
-      if [ "$resolved_port" != "$PORT" ]; then
-        uds_log "Port $PORT is in use, using port $resolved_port instead" "warning"
-        PORT="$resolved_port"
-        export PORT
-      fi
-    else
-      uds_log "Failed to resolve port conflicts" "error"
-      return 1
-    fi
-  fi
-  
-  # Check if we need to generate a compose file
-  if [ -z "${COMPOSE_FILE:-}" ]; then
-    local compose_file="${APP_DIR}/docker-compose.yml"
-    uds_generate_compose_file "$APP_NAME" "$IMAGE" "$TAG" "$PORT" "$compose_file" "$ENV_VARS" "$VOLUMES" "$USE_PROFILES" "$EXTRA_HOSTS"
-    COMPOSE_FILE="$compose_file"
-  else
-    # Copy the provided compose file to app directory
-    cp "$COMPOSE_FILE" "${APP_DIR}/docker-compose.yml"
-    COMPOSE_FILE="${APP_DIR}/docker-compose.yml"
-  fi
-  
-  # Check if we need to handle SSL
-  if [ "$SSL" = "true" ]; then
-    local server_name="$DOMAIN"
-    if [ "$ROUTE_TYPE" = "subdomain" ] && [ -n "$ROUTE" ]; then
-      server_name="${ROUTE}.${DOMAIN}"
-    fi
-    
-    # Check if SSL plugin is available
-    if type "plugin_ssl_check" &>/dev/null; then
-      uds_log "Checking SSL certificates using SSL plugin" "debug"
-      plugin_ssl_check "$APP_NAME"
-    else
-      # Check if SSL cert already exists
-      if [ ! -d "${UDS_CERTS_DIR}/${server_name}" ]; then
-        uds_log "Setting up SSL certificate for $server_name" "info"
-        
-        # Create cert directory
-        mkdir -p "${UDS_CERTS_DIR}/${server_name}"
-        
-        # Generate self-signed certificate as fallback
-        uds_log "No SSL plugin available, using self-signed certificate" "warning"
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-          -keyout "${UDS_CERTS_DIR}/${server_name}/privkey.pem" \
-          -out "${UDS_CERTS_DIR}/${server_name}/fullchain.pem" \
-          -subj "/CN=${server_name}"
-      fi
-    fi
-  fi
-  
-  # Create Nginx configuration
-  uds_create_nginx_config "$APP_NAME" "$DOMAIN" "$ROUTE_TYPE" "$ROUTE" "$PORT" "$SSL"
-  
-  uds_log "Deployment preparation completed" "success"
-  return 0
-}
-
-# Deploy the application
-uds_deploy_application() {
-  uds_log "Deploying application: $APP_NAME" "info"
-  
-  if [ "${DRY_RUN:-false}" = "true" ]; then
-    uds_log "DRY RUN: Would deploy $APP_NAME using $COMPOSE_FILE" "info"
-    return 0
-  fi
-  
-  # Stop existing containers if they exist
-  if docker ps -a --filter "name=${APP_NAME}-" | grep -q "${APP_NAME}-"; then
-    uds_log "Stopping existing containers for $APP_NAME" "info"
-    cd "$APP_DIR"
-    $UDS_DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down || true
-  fi
-  
-  # Execute pre-start hooks
-  uds_execute_hook "pre_start" "$APP_NAME" "$APP_DIR"
-  
-  # Start the application
-  uds_log "Starting $APP_NAME" "info"
-  cd "$APP_DIR"
-  
-  # Determine if we need to use profiles
-  if [ "$USE_PROFILES" = "true" ]; then
-    $UDS_DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile app up -d
-  else
-    $UDS_DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
-  fi
-  
-  if [ $? -ne 0 ]; then
-    uds_log "Failed to start $APP_NAME containers" "error"
-    return 1
-  fi
-  
-  # Execute post-start hooks
-  uds_execute_hook "post_start" "$APP_NAME" "$APP_DIR"
-  
-  # Determine appropriate health check type if auto-detect is enabled
-  if [ "$HEALTH_CHECK_TYPE" = "auto" ] && type uds_detect_health_check_type &>/dev/null; then
-    local detected_type=$(uds_detect_health_check_type "$APP_NAME" "$IMAGE" "$HEALTH_CHECK")
-    uds_log "Auto-detected health check type: $detected_type" "debug"
-    HEALTH_CHECK_TYPE="$detected_type"
-  fi
-  
-  # Perform health check if needed
-  if [ "$HEALTH_CHECK_TYPE" != "none" ] && type uds_check_health &>/dev/null; then
-    local container_name="${APP_NAME}-app"
-    
-    # Handle health check
-    if ! uds_check_health "$APP_NAME" "$PORT" "$HEALTH_CHECK" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "$container_name" "$HEALTH_CHECK_COMMAND"; then
-      uds_log "Application health check failed" "error"
-      
-      # Collect logs from failed container
-      uds_log "Container logs for $container_name:" "info"
-      docker logs --tail="${MAX_LOG_LINES:-100}" "$container_name" 2>&1 || true
-      
-      # Execute health-check-failed hooks
-      uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
-      
-      return 1
-    fi
-  fi
-  
-  # Register the service
-  uds_register_service "$APP_NAME" "$DOMAIN" "$ROUTE_TYPE" "$ROUTE" "$PORT" "$IMAGE" "$TAG" "$PERSISTENT"
-  
-  # Reload Nginx to apply configuration
-  uds_reload_nginx
-  
-  # Execute post-deploy hooks
-  uds_execute_hook "post_deploy" "$APP_NAME" "$APP_DIR"
-  
-  uds_log "Deployment of $APP_NAME completed successfully" "success"
-  
-  # Print access URL
-  local url_scheme="http"
-  if [ "$SSL" = "true" ]; then
-    url_scheme="https"
-  fi
-  
-  local access_url=""
-  if [ "$ROUTE_TYPE" = "subdomain" ] && [ -n "$ROUTE" ]; then
-    access_url="${url_scheme}://${ROUTE}.${DOMAIN}"
-  elif [ "$ROUTE_TYPE" = "path" ] && [ -n "$ROUTE" ]; then
-    access_url="${url_scheme}://${DOMAIN}/${ROUTE}"
-  else
-    access_url="${url_scheme}://${DOMAIN}"
-  fi
-  
-  uds_log "Application available at: $access_url" "success"
-  
-  return 0
-}
-
-# Main deployment function
+# Update the main deployment function to use automatic rollback
 uds_do_deploy() {
   # Parse command-line arguments
   uds_parse_args "$@"
@@ -465,11 +431,19 @@ uds_do_deploy() {
       return 1
     }
     
-    # Deploy the application
-    uds_deploy_application || {
-      uds_log "Deployment failed" "error"
-      return 1
-    }
+    # Deploy the application with automatic rollback
+    if [ "${AUTO_ROLLBACK:-true}" = "true" ]; then
+      uds_deploy_with_rollback || {
+        uds_log "Deployment with rollback failed" "error"
+        return 1
+      }
+    else
+      # Deploy without rollback
+      uds_deploy_application || {
+        uds_log "Deployment failed" "error"
+        return 1
+      }
+    fi
   fi
   
   return 0
