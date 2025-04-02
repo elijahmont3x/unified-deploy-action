@@ -47,40 +47,37 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-# Set up SSH key with improved handling
+# Set up SSH key with sanitization detection
 if [ -n "$SSH_KEY" ]; then
-  # Write the key using base64 encoding to preserve exact format including newlines
-  # 1. Write to a temp file first
-  echo "$SSH_KEY" > "$SSH_KEY_FILE.base64"
-  
-  # 2. Make sure the SSH key file is empty to start
-  > "$SSH_KEY_FILE"
-  chmod 600 "$SSH_KEY_FILE"
-  
-  # 3. Inspect the SSH key for format - output first line for debugging
-  log "DEBUG: SSH key first line: $(head -n1 "$SSH_KEY_FILE.base64" | head -c20)..."
-  
-  # 4. Decode if it looks base64 encoded, otherwise use as-is
-  if [[ $(head -c10 "$SSH_KEY_FILE.base64") == "LS0tLS1CRU" ]]; then
-    log "SSH key appears to be base64 encoded, decoding"
-    cat "$SSH_KEY_FILE.base64" | base64 -d > "$SSH_KEY_FILE"
-  else 
-    log "Using SSH key as-is"
-    cat "$SSH_KEY_FILE.base64" > "$SSH_KEY_FILE"
+  # Check if the SSH key appears to have been sanitized (contains *****)
+  if [[ "$SSH_KEY" == *"******"* ]]; then
+    log "ERROR: SSH key appears to be sanitized (contains asterisks). This prevents proper authentication."
+    log "Please ensure your SSH key is properly passed as a secret and not logged or sanitized."
+    exit 1
   fi
   
-  # 5. Secure the key file
+  # Write the key with exact formatting preserved using printf to avoid any shell interpretation
+  printf "%s" "$SSH_KEY" > "$SSH_KEY_FILE"
   chmod 600 "$SSH_KEY_FILE"
   
-  # 6. Clean up
-  rm -f "$SSH_KEY_FILE.base64"
-  
-  # 7. Verify key format
-  if ! ssh-keygen -l -f "$SSH_KEY_FILE" > /dev/null 2>&1; then
-    log "Warning: SSH key appears to be in invalid format, attempting to fix"
-    # Try to fix common issues like line breaks or extra whitespace
-    sed -i 's/\\n/\n/g' "$SSH_KEY_FILE"
-    chmod 600 "$SSH_KEY_FILE"
+  # Verify SSH key format and show details (without revealing the key)
+  if ssh-keygen -l -f "$SSH_KEY_FILE" 2>/dev/null; then
+    log "SSH key is valid"
+  else
+    log "WARNING: SSH key appears invalid, attempting to troubleshoot..."
+    
+    # Check for common SSH key format issues
+    if grep -q "BEGIN OPENSSH PRIVATE KEY" "$SSH_KEY_FILE"; then
+      log "Key uses OpenSSH format"
+    elif grep -q "BEGIN RSA PRIVATE KEY" "$SSH_KEY_FILE"; then
+      log "Key uses RSA PEM format"
+    elif grep -q "BEGIN EC PRIVATE KEY" "$SSH_KEY_FILE"; then
+      log "Key uses EC PEM format"
+    else
+      log "Key doesn't appear to be in a standard format"
+      # Try to identify issue with key format
+      head -n 1 "$SSH_KEY_FILE" | tr -d '\n' | head -c 30 | hexdump -C
+    fi
   fi
 else
   log "Error: ssh-key is required"
