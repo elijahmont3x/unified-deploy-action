@@ -15,11 +15,12 @@ env | grep ^INPUT_ || echo "No INPUT_ variables found"
 CONFIG_FILE="/opt/uds/configs/action-config.json"
 SSH_KEY_FILE="/tmp/ssh_key"
 
-# GitHub Actions provides hyphenated inputs with underscores in variable names
-APP_NAME="${INPUT_APP_NAME}"
+# CRITICAL FIX: GitHub Actions preserves hyphens in environment variable names
+# So app-name becomes INPUT_APP-NAME, not INPUT_APP_NAME
+APP_NAME="${INPUT_APP-NAME}"
 HOST="${INPUT_HOST}"
 USERNAME="${INPUT_USERNAME}"
-SSH_KEY="${INPUT_SSH_KEY}"
+SSH_KEY="${INPUT_SSH-KEY}"
 
 log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}'"
 
@@ -54,37 +55,37 @@ log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
   "command": "${INPUT_COMMAND:-deploy}",
-  "app_name": "${INPUT_APP_NAME}",
+  "app_name": "${APP_NAME}",
   "image": "${INPUT_IMAGE}",
   "tag": "${INPUT_TAG:-latest}",
   "domain": "${INPUT_DOMAIN}",
-  "route_type": "${INPUT_ROUTE_TYPE:-path}",
+  "route_type": "${INPUT_ROUTE-TYPE:-path}",
   "route": "${INPUT_ROUTE}",
   "port": "${INPUT_PORT:-3000}",
   "ssl": ${INPUT_SSL:-true},
-  "ssl_email": "${INPUT_SSL_EMAIL}",
+  "ssl_email": "${INPUT_SSL-EMAIL}",
   "volumes": "${INPUT_VOLUMES}",
-  "env_vars": ${INPUT_ENV_VARS:-{}},
+  "env_vars": ${INPUT_ENV-VARS:-{}},
   "persistent": ${INPUT_PERSISTENT:-false},
-  "compose_file": "${INPUT_COMPOSE_FILE}",
-  "use_profiles": ${INPUT_USE_PROFILES:-true},
-  "extra_hosts": "${INPUT_EXTRA_HOSTS}",
-  "health_check": "${INPUT_HEALTH_CHECK:-/health}",
-  "health_check_timeout": "${INPUT_HEALTH_CHECK_TIMEOUT:-60}",
-  "health_check_type": "${INPUT_HEALTH_CHECK_TYPE:-auto}",
-  "health_check_command": "${INPUT_HEALTH_CHECK_COMMAND}",
-  "port_auto_assign": ${INPUT_PORT_AUTO_ASSIGN:-true},
-  "version_tracking": ${INPUT_VERSION_TRACKING:-true},
-  "pg_migration_enabled": ${INPUT_PG_MIGRATION_ENABLED:-false},
-  "pg_connection_string": "${INPUT_PG_CONNECTION_STRING}",
-  "pg_backup_enabled": ${INPUT_PG_BACKUP_ENABLED:-true},
-  "pg_migration_script": "${INPUT_PG_MIGRATION_SCRIPT}",
-  "telegram_enabled": ${INPUT_TELEGRAM_ENABLED:-false},
-  "telegram_bot_token": "${INPUT_TELEGRAM_BOT_TOKEN}",
-  "telegram_chat_id": "${INPUT_TELEGRAM_CHAT_ID}",
-  "telegram_notify_level": "${INPUT_TELEGRAM_NOTIFY_LEVEL:-info}",
-  "telegram_include_logs": ${INPUT_TELEGRAM_INCLUDE_LOGS:-true},
-  "max_log_lines": ${INPUT_MAX_LOG_LINES:-100},
+  "compose_file": "${INPUT_COMPOSE-FILE}",
+  "use_profiles": ${INPUT_USE-PROFILES:-true},
+  "extra_hosts": "${INPUT_EXTRA-HOSTS}",
+  "health_check": "${INPUT_HEALTH-CHECK:-/health}",
+  "health_check_timeout": ${INPUT_HEALTH-CHECK-TIMEOUT:-60}",
+  "health_check_type": "${INPUT_HEALTH-CHECK-TYPE:-auto}",
+  "health_check_command": "${INPUT_HEALTH-CHECK-COMMAND}",
+  "port_auto_assign": ${INPUT_PORT-AUTO-ASSIGN:-true},
+  "version_tracking": ${INPUT_VERSION-TRACKING:-true},
+  "pg_migration_enabled": ${INPUT_PG-MIGRATION-ENABLED:-false},
+  "pg_connection_string": "${INPUT_PG-CONNECTION-STRING}",
+  "pg_backup_enabled": ${INPUT_PG-BACKUP-ENABLED:-true},
+  "pg_migration_script": "${INPUT_PG-MIGRATION-SCRIPT}",
+  "telegram_enabled": ${INPUT_TELEGRAM-ENABLED:-false},
+  "telegram_bot_token": "${INPUT_TELEGRAM-BOT-TOKEN}",
+  "telegram_chat_id": "${INPUT_TELEGRAM-CHAT-ID}",
+  "telegram_notify_level": "${INPUT_TELEGRAM-NOTIFY-LEVEL:-info}",
+  "telegram_include_logs": ${INPUT_TELEGRAM-INCLUDE-LOGS:-true},
+  "max_log_lines": ${INPUT_MAX-LOG-LINES:-100},
   "plugins": "${INPUT_PLUGINS}"
 }
 EOF
