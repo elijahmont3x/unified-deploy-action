@@ -117,7 +117,7 @@ else
   exit 1
 fi
 
-# Create config file from direct inputs - fix JSON formatting issues
+# Create config file from direct inputs - fix environment variable substitution
 log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
@@ -125,35 +125,35 @@ cat > "$CONFIG_FILE" << EOF
   "app_name": "${APP_NAME}",
   "image": "${INPUT_IMAGE}",
   "tag": "${INPUT_TAG:-latest}",
-  "domain": "${INPUT_DOMAIN}",
-  "route_type": "${INPUT_ROUTE-TYPE:-path}",
-  "route": "${INPUT_ROUTE}",
+  "domain": "$(printenv 'INPUT_DOMAIN' || echo '')",
+  "route_type": "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')",
+  "route": "$(printenv 'INPUT_ROUTE' || echo '')",
   "port": "${INPUT_PORT:-3000}",
   "ssl": ${INPUT_SSL:-true},
-  "ssl_email": "${INPUT_SSL-EMAIL}",
+  "ssl_email": "$(printenv 'INPUT_SSL-EMAIL' || echo '')",
   "volumes": "${INPUT_VOLUMES}",
-  "env_vars": ${INPUT_ENV-VARS:-{}},
+  "env_vars": $(printenv 'INPUT_ENV-VARS' || echo '{}'),
   "persistent": ${INPUT_PERSISTENT:-false},
-  "compose_file": "${INPUT_COMPOSE-FILE}",
-  "use_profiles": ${INPUT_USE-PROFILES:-true},
-  "extra_hosts": "${INPUT_EXTRA-HOSTS}",
-  "health_check": "${INPUT_HEALTH-CHECK:-/health}",
-  "health_check_timeout": ${INPUT_HEALTH-CHECK-TIMEOUT:-60},
-  "health_check_type": "${INPUT_HEALTH-CHECK-TYPE:-auto}",
-  "health_check_command": "${INPUT_HEALTH-CHECK-COMMAND}",
-  "port_auto_assign": ${INPUT_PORT-AUTO-ASSIGN:-true},
-  "version_tracking": ${INPUT_VERSION-TRACKING:-true},
-  "pg_migration_enabled": ${INPUT_PG-MIGRATION-ENABLED:-false},
-  "pg_connection_string": "${INPUT_PG-CONNECTION-STRING}",
-  "pg_backup_enabled": ${INPUT_PG-BACKUP-ENABLED:-true},
-  "pg_migration_script": "${INPUT_PG-MIGRATION-SCRIPT}",
-  "telegram_enabled": ${INPUT_TELEGRAM-ENABLED:-false},
-  "telegram_bot_token": "${INPUT_TELEGRAM-BOT-TOKEN}",
-  "telegram_chat_id": "${INPUT_TELEGRAM-CHAT-ID}",
-  "telegram_notify_level": "${INPUT_TELEGRAM-NOTIFY-LEVEL:-info}",
-  "telegram_include_logs": ${INPUT_TELEGRAM-INCLUDE-LOGS:-true},
-  "max_log_lines": ${INPUT_MAX-LOG-LINES:-100},
-  "plugins": "${INPUT_PLUGINS}"
+  "compose_file": "$(printenv 'INPUT_COMPOSE-FILE' || echo '')",
+  "use_profiles": $(printenv 'INPUT_USE-PROFILES' || echo 'true'),
+  "extra_hosts": "$(printenv 'INPUT_EXTRA-HOSTS' || echo '')",
+  "health_check": "$(printenv 'INPUT_HEALTH-CHECK' || echo '/health')",
+  "health_check_timeout": $(printenv 'INPUT_HEALTH-CHECK-TIMEOUT' || echo '60'),
+  "health_check_type": "$(printenv 'INPUT_HEALTH-CHECK-TYPE' || echo 'auto')",
+  "health_check_command": "$(printenv 'INPUT_HEALTH-CHECK-COMMAND' || echo '')",
+  "port_auto_assign": $(printenv 'INPUT_PORT-AUTO-ASSIGN' || echo 'true'),
+  "version_tracking": $(printenv 'INPUT_VERSION-TRACKING' || echo 'true'),
+  "pg_migration_enabled": $(printenv 'INPUT_PG-MIGRATION-ENABLED' || echo 'false'),
+  "pg_connection_string": "$(printenv 'INPUT_PG-CONNECTION-STRING' || echo '')",
+  "pg_backup_enabled": $(printenv 'INPUT_PG-BACKUP-ENABLED' || echo 'true'),
+  "pg_migration_script": "$(printenv 'INPUT_PG-MIGRATION-SCRIPT' || echo '')",
+  "telegram_enabled": $(printenv 'INPUT_TELEGRAM-ENABLED' || echo 'false'),
+  "telegram_bot_token": "$(printenv 'INPUT_TELEGRAM-BOT-TOKEN' || echo '')",
+  "telegram_chat_id": "$(printenv 'INPUT_TELEGRAM-CHAT-ID' || echo '')",
+  "telegram_notify_level": "$(printenv 'INPUT_TELEGRAM-NOTIFY-LEVEL' || echo 'info')",
+  "telegram_include_logs": $(printenv 'INPUT_TELEGRAM-INCLUDE-LOGS' || echo 'true'),
+  "max_log_lines": $(printenv 'INPUT_MAX-LOG-LINES' || echo '100'),
+  "plugins": "$(printenv 'INPUT_PLUGINS' || echo '')"
 }
 EOF
 
