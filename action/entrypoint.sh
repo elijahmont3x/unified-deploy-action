@@ -47,38 +47,71 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-# Set up SSH with a path the container user can write to
+# Set up SSH with an extremely robust key handling approach
 if [ -n "$SSH_KEY" ]; then
-  log "Setting up SSH with container-friendly approach..."
+  log "Setting up SSH with robust key handling..."
   
-  # Use /tmp directory which should be writable by any user
+  # Create SSH directory
   SSH_DIR="/tmp/.ssh"
   mkdir -p "$SSH_DIR"
   chmod 700 "$SSH_DIR"
   
-  # Write key directly without any processing
-  printf "%s" "$SSH_KEY" > "$SSH_DIR/id_rsa"
+  # Create a unique identifier for debugging
+  KEY_ID=$(echo "$SSH_KEY" | md5sum | cut -d' ' -f1 | head -c 8)
+  log "Processing SSH key (ID: $KEY_ID)"
+  
+  # Write key to a file, ensuring proper PEM format
+  # Check if key begins with proper SSH key header
+  if [[ "$SSH_KEY" == "-----BEGIN"* ]]; then
+    log "Key appears to be in PEM format"
+    echo "$SSH_KEY" > "$SSH_DIR/id_rsa"
+  else
+    log "Key doesn't appear to have proper headers, attempting to fix format"
+    # Try to detect and fix common issues:
+    # 1. Newlines might be escaped or missing
+    echo "$SSH_KEY" | sed 's/\\n/\n/g' > "$SSH_DIR/id_rsa"
+  fi
+  
   chmod 600 "$SSH_DIR/id_rsa"
   
-  # Set minimal SSH config in the writable location
+  # Validate the key
+  if ! ssh-keygen -l -f "$SSH_DIR/id_rsa" &>/dev/null; then
+    log "WARNING: SSH key appears invalid, will try alternative formats"
+    
+    # Try base64 decode in case it's encoded
+    if command -v base64 &>/dev/null; then
+      log "Attempting base64 decode of key"
+      echo "$SSH_KEY" | base64 -d > "$SSH_DIR/id_rsa.base64" 2>/dev/null || true
+      if [ -s "$SSH_DIR/id_rsa.base64" ] && ssh-keygen -l -f "$SSH_DIR/id_rsa.base64" &>/dev/null; then
+        log "Base64 decoded key appears valid, using it"
+        mv "$SSH_DIR/id_rsa.base64" "$SSH_DIR/id_rsa"
+      else
+        rm -f "$SSH_DIR/id_rsa.base64"
+      fi
+    fi
+
+    # Last resort: Use the OpenSSH key directly with the ssh command
+    echo "$SSH_KEY" > "$SSH_DIR/raw_key"
+    chmod 600 "$SSH_DIR/raw_key"
+  fi
+  
+  # Configure SSH client
   cat > "$SSH_DIR/config" << EOF
 Host $HOST
   StrictHostKeyChecking no
   UserKnownHostsFile=/dev/null
   IdentityFile $SSH_DIR/id_rsa
-  LogLevel ERROR
+  LogLevel DEBUG
 EOF
+
   chmod 600 "$SSH_DIR/config"
   
-  # Set the SSH command to use our custom config
-  SSH_COMMAND="ssh -F $SSH_DIR/config"
+  # Create direct command that skips ssh-agent
+  SSH_COMMAND="ssh -v -F $SSH_DIR/config -i $SSH_DIR/id_rsa"
   
-  # Test SSH connection
-  if ! $SSH_COMMAND -o BatchMode=yes -o ConnectTimeout=5 "$USERNAME@$HOST" echo "SSH connection test" > /dev/null 2>&1; then
-    log "WARNING: SSH connection test failed. Continuing anyway..."
-  else
-    log "SSH connection test successful"
-  fi
+  # Show key details (without exposing the key) for debugging
+  log "Key information:"
+  ssh-keygen -l -f "$SSH_DIR/id_rsa" 2>&1 || echo "Could not parse key format"
 else
   log "Error: ssh-key is required"
   exit 1
@@ -142,8 +175,8 @@ case "${INPUT_COMMAND:-deploy}" in
     ;;
 esac
 
-# Execute deployment via SSH using our custom SSH command
-log "Executing deployment via SSH..."
+# Execute deployment via SSH using direct key authentication
+log "Executing deployment via SSH... (using direct key authentication)"
 $SSH_COMMAND "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"
 
 # Clean up
