@@ -117,7 +117,7 @@ else
   exit 1
 fi
 
-# Create config file from direct inputs - fix environment variable substitution
+# Create config file from direct inputs with better handling of empty values
 log "Generating configuration file from inputs..."
 cat > "$CONFIG_FILE" << EOF
 {
@@ -131,8 +131,8 @@ cat > "$CONFIG_FILE" << EOF
   "port": "${INPUT_PORT:-3000}",
   "ssl": ${INPUT_SSL:-true},
   "ssl_email": "$(printenv 'INPUT_SSL-EMAIL' || echo '')",
-  "volumes": "${INPUT_VOLUMES}",
-  "env_vars": $(printenv 'INPUT_ENV-VARS' || echo '{}'),
+  "volumes": "${INPUT_VOLUMES:-}",
+  "env_vars": $(printenv 'INPUT_ENV-VARS' 2>/dev/null || echo '{}'),
   "persistent": ${INPUT_PERSISTENT:-false},
   "compose_file": "$(printenv 'INPUT_COMPOSE-FILE' || echo '')",
   "use_profiles": $(printenv 'INPUT_USE-PROFILES' || echo 'true'),
@@ -160,7 +160,15 @@ EOF
 # Validate JSON config before using it
 if ! jq . "$CONFIG_FILE" > /dev/null 2>&1; then
   log "ERROR: Generated JSON config is invalid"
-  jq . "$CONFIG_FILE" || cat "$CONFIG_FILE"
+  cat "$CONFIG_FILE" | jq . 2>/dev/null || cat "$CONFIG_FILE"
+  
+  # Additional diagnostic info for debugging
+  log "Attempting to identify JSON issues..."
+  for key in "env_vars" "max_log_lines"; do
+    log "Checking value for $key..."
+    grep -n "\"$key\":" "$CONFIG_FILE"
+  done
+  
   exit 1
 fi
 
