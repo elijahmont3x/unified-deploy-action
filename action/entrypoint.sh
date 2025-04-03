@@ -83,12 +83,36 @@ fi
 
 chmod 700 "$SSH_DIR" || error_exit "Failed to set permissions on SSH directory"
 
-# Validate SSH key format before writing
-if ! echo "$SSH_KEY" | grep -q "BEGIN.*PRIVATE KEY"; then
-  error_exit "Invalid SSH key format. Key must be in PEM format starting with -----BEGIN PRIVATE KEY-----"
+# Enhanced SSH key validation
+validate_ssh_key() {
+  local key="$1"
+  local key_file="$2"
+  
+  # Write key to temporary file for validation
+  echo "$key" > "$key_file"
+  
+  # Check if key starts with proper headers for various key types
+  if ! grep -qE '^\-\-\-\-\-BEGIN (RSA|OPENSSH|DSA|EC|PGP) PRIVATE KEY\-\-\-\-\-' "$key_file"; then
+    return 1
+  fi
+  
+  # Additional validation using ssh-keygen if available
+  if command -v ssh-keygen &>/dev/null; then
+    if ! ssh-keygen -l -f "$key_file" &>/dev/null; then
+      return 1
+    fi
+  fi
+  
+  return 0
+}
+
+# Validate SSH key with enhanced checks
+if ! validate_ssh_key "$SSH_KEY" "$SSH_DIR/id_rsa.tmp"; then
+  error_exit "Invalid SSH key format. Key must be a valid private key."
 fi
 
-echo "$SSH_KEY" > "$SSH_DIR/id_rsa" || error_exit "Failed to write SSH key"
+# Move the validated key to the final location
+mv "$SSH_DIR/id_rsa.tmp" "$SSH_DIR/id_rsa" || error_exit "Failed to write SSH key"
 chmod 600 "$SSH_DIR/id_rsa" || error_exit "Failed to set permissions on SSH key"
 
 # Configure SSH client with timeouts and failure handling

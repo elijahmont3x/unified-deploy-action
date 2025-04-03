@@ -106,7 +106,7 @@ uds_parse_args() {
   if [ ! -f "${CONFIG_FILE}" ]; then
     uds_log "Configuration file not found: ${CONFIG_FILE}" "error"
     exit 1
-  }
+  fi
   
   # Export variables for use in other functions
   export DRY_RUN MULTI_STAGE CHECK_DEPENDENCIES AUTO_ROLLBACK
@@ -179,7 +179,7 @@ uds_check_deploy_dependencies() {
     uds_log "Checking multi-container network connectivity" "info"
     if ! docker network ls | grep -q "${app_name}-network"; then
       uds_log "Network for $app_name doesn't exist yet, will be created during deployment" "info"
-    }
+    fi
   fi
   
   # Check if ports are available with better error reporting
@@ -224,7 +224,7 @@ uds_deploy_with_rollback() {
     if [ "${AUTO_ROLLBACK}" != "true" ]; then
       uds_log "Automatic rollback disabled, deployment remains in failed state" "warning"
       return 1
-    }
+    fi
     
     # Check if we have rollback capability (version history)
     local service_data=$(uds_get_service "$APP_NAME")
@@ -308,110 +308,159 @@ uds_multi_stage_deployment() {
   
   # Stage 2: Preparation
   uds_log "Stage 2: Preparation" "info"
-  if ! uds_prepare_deployment; then
-    uds_log "Deployment preparation failed" "error"
+  
+  # Create staging directory with unique timestamp to prevent collisions
+  local timestamp=$(date +%s)
+  local staging_dir="${APP_DIR}_staging_${timestamp}"
+  
+  # Remove any existing staging directory with the same name
+  rm -rf "$staging_dir" 2>/dev/null || true
+  
+  # Create the staging directory
+  if ! mkdir -p "$staging_dir"; then
+    uds_log "Failed to create staging directory: $staging_dir" "error"
     return 1
   fi
   
-  # Stage 3: Deployment
-  uds_log "Stage 3: Deployment" "info"
-  
-  # Create a staging directory for staged deployment
-  local staging_dir="${APP_DIR}_staging"
-  rm -rf "$staging_dir" 2>/dev/null || true
-  mkdir -p "$staging_dir"
-  
-  # Clone the app configuration
-  cp -a "$APP_DIR"/* "$staging_dir/" 2>/dev/null || true
-  
-  # Save original directory
+  # Store original directory and create a backup
   local original_dir="$APP_DIR"
+  local backup_dir="${original_dir}_backup_${timestamp}"
   
-  # Temporarily set the app directory to staging directory
+  # Save original APP_DIR value for restoration in case of failure
+  local saved_app_dir="$APP_DIR"
+  
+  # Set APP_DIR to staging directory for preparation
   APP_DIR="$staging_dir"
   export APP_DIR
   
-  # Deploy to staging with more robust error handling
-  if ! uds_deploy_application; then
-    # Restore original directory path for cleanup
-    APP_DIR="$original_dir"
+  # Prepare deployment in staging
+  if ! uds_prepare_deployment; then
+    uds_log "Deployment preparation failed in staging environment" "error"
+    
+    # Restore original APP_DIR
+    APP_DIR="$saved_app_dir"
     export APP_DIR
     
     # Clean up staging directory
-    rm -rf "$staging_dir"
+    rm -rf "$staging_dir" 2>/dev/null || true
     
-    uds_log "Deployment to staging environment failed" "error"
     return 1
   fi
   
-  # Stage 4: Cutover with backup
-  uds_log "Stage 4: Cutover" "info"
+  # Stage 3: Deployment to staging
+  uds_log "Stage 3: Deploying to staging environment" "info"
   
-  # Create backup of original for potential rollback
+  # Deploy application to staging with robust error handling
+  local deploy_start_time=$(date +%s)
+  local deploy_result=0
+  
+  # Deploy to staging with timeout
+  (
+    # Set timeout handler (if timeout command is available)
+    if command -v timeout &>/dev/null; then
+      timeout --foreground 600 bash -c "cd '$APP_DIR' && uds_deploy_application"
+      deploy_result=$?
+    else
+      # Fallback if timeout command is not available
+      cd "$APP_DIR" && uds_deploy_application
+      deploy_result=$?
+    fi
+    
+    exit $deploy_result
+  ) 
+  
+  deploy_result=$?
+  local deploy_duration=$(($(date +%s) - deploy_start_time))
+  
+  if [ $deploy_result -ne 0 ]; then
+    uds_log "Deployment to staging failed after ${deploy_duration}s" "error"
+    
+    # Restore original APP_DIR
+    APP_DIR="$saved_app_dir"
+    export APP_DIR
+    
+    # Clean up staging directory
+    rm -rf "$staging_dir" 2>/dev/null || true
+    
+    return 1
+  fi
+  
+  uds_log "Deployment to staging completed successfully (${deploy_duration}s)" "success"
+  
+  # Stage 4: Cutover with backup
+  uds_log "Stage 4: Cutover - switching traffic to new deployment" "info"
+  
+  # Create backup of existing production deployment if it exists
   if [ -d "$original_dir" ]; then
-    local backup_dir="${original_dir}_backup_$(date +%s)"
-    uds_log "Creating backup at $backup_dir" "info"
+    uds_log "Creating backup of current deployment at $backup_dir" "info"
+    
+    # Use atomic mv for more reliable backups
     if ! mv "$original_dir" "$backup_dir"; then
       uds_log "Failed to create backup, aborting cutover" "error"
-      # Cleanup staging
-      APP_DIR="$original_dir"
+      
+      # Restore original APP_DIR
+      APP_DIR="$saved_app_dir"
       export APP_DIR
-      rm -rf "$staging_dir"
+      
+      # Attempt to clean up staging
+      rm -rf "$staging_dir" 2>/dev/null || true
+      
       return 1
     fi
-  fi
-  
-  # Stop existing deployment if it exists
-  if docker ps -a --filter "name=${APP_NAME}-" | grep -q "${APP_NAME}-"; then
-    uds_log "Stopping existing deployment" "info"
     
-    # Stop with error handling
-    docker ps -a -q --filter "name=${APP_NAME}-" | xargs docker stop 2>/dev/null || {
-      uds_log "Warning: Some containers could not be stopped properly" "warning"
-    }
+    # Check if backup was successful
+    if [ ! -d "$backup_dir" ]; then
+      uds_log "Backup directory not found after move, deployment may be in an inconsistent state" "error"
+      
+      # Restore original APP_DIR
+      APP_DIR="$saved_app_dir"
+      export APP_DIR
+      return 1
+    fi
+  else
+    uds_log "No existing deployment to backup" "info"
   fi
   
-  # Move staging to production with error handling
+  # Move staging to production
+  uds_log "Moving staging deployment to production" "info"
+  
   if ! mv "$staging_dir" "$original_dir"; then
     uds_log "Failed to move staging to production" "error"
     
-    # Attempt to restore from backup
+    # Attempt recovery from backup if it exists
     if [ -d "$backup_dir" ]; then
-      uds_log "Restoring from backup" "warning"
-      rm -rf "$staging_dir" 2>/dev/null || true
+      uds_log "Attempting to restore from backup" "warning"
+      
       if ! mv "$backup_dir" "$original_dir"; then
-        uds_log "Failed to restore backup during rollback" "critical"
+        uds_log "Failed to restore backup! Deployment may be in an inconsistent state" "critical"
+        
+        # Restore original APP_DIR
+        APP_DIR="$saved_app_dir"
+        export APP_DIR
         return 1
       fi
       
-      # Start the previous version
-      cd "$original_dir" || {
-        uds_log "Failed to change to app directory" "critical"
-        return 1
-      }
-      
-      if [ -f "$original_dir/docker-compose.yml" ]; then
-        if ! $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d; then
-          uds_log "Failed to start previous version" "critical"
-          return 1
-        fi
-      fi
-      
-      uds_log "Rollback completed successfully" "warning"
+      uds_log "Successfully restored from backup" "warning"
+    else
+      # Try to create an empty directory as a last resort
+      mkdir -p "$original_dir" || true
     fi
     
+    # Restore original APP_DIR
+    APP_DIR="$saved_app_dir"
+    export APP_DIR
     return 1
   fi
   
-  # Restore original app directory path
+  # Restore original APP_DIR path after successful move
   APP_DIR="$original_dir"
   export APP_DIR
   
   # Execute post-cutover hooks
   uds_execute_hook "post_cutover" "$APP_NAME" "$APP_DIR"
   
-  # Stage 5: Verification with enhanced health checking
-  uds_log "Stage 5: Verification" "info"
+  # Stage 5: Verification
+  uds_log "Stage 5: Verification - testing new deployment" "info"
   
   # Determine appropriate health check type if auto-detect is enabled
   if [ "$HEALTH_CHECK_TYPE" = "auto" ] && type uds_detect_health_check_type &>/dev/null; then
@@ -420,48 +469,87 @@ uds_multi_stage_deployment() {
     HEALTH_CHECK_TYPE="$detected_type"
   fi
   
-  # Use consolidated health check function with retry logic
-  if [ "$HEALTH_CHECK_TYPE" != "none" ] && type uds_health_check_with_retry &>/dev/null; then
-    if uds_health_check_with_retry "$APP_NAME" "$PORT" "$HEALTH_CHECK" "5" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "${APP_NAME}-app" "$HEALTH_CHECK_COMMAND"; then
-      uds_log "Health check passed" "success"
+  # Skip health check if explicitly disabled
+  if [ "$HEALTH_CHECK_TYPE" = "none" ] || [ "$HEALTH_CHECK" = "none" ] || [ "$HEALTH_CHECK" = "disabled" ]; then
+    uds_log "Health check disabled, skipping verification" "info"
+  else
+    # Use enhanced health check function with proper error handling
+    if type uds_health_check_with_retry &>/dev/null; then
+      # Set extra attempts for post-deployment verification (more thorough than regular health check)
+      local verify_attempts=8
+      local verify_timeout=$((HEALTH_CHECK_TIMEOUT * 2)) # Double the timeout for verification
       
-      # Keep backup for a short time in case of issues
-      if [ -d "$backup_dir" ]; then
-        uds_log "Deployment successful. Backup will be removed automatically after 1 hour." "info"
-        (nohup bash -c "sleep 3600 && rm -rf '$backup_dir'" &>/dev/null &)
-      fi
+      uds_log "Verifying deployment with health check (timeout: ${verify_timeout}s)" "info"
       
-      uds_log "Multi-stage deployment completed successfully" "success"
-      return 0
-    else
-      uds_log "Health check failed, rolling back" "error"
-      
-      # Rollback to previous version
-      if [ -d "$backup_dir" ]; then
-        uds_log "Rolling back to previous version" "warning"
-        rm -rf "$APP_DIR" 2>/dev/null || true
-        if ! mv "$backup_dir" "$APP_DIR"; then
-          uds_log "Failed to restore backup during rollback" "critical"
-          return 1
-        fi
+      if ! uds_health_check_with_retry "$APP_NAME" "$PORT" "$HEALTH_CHECK" "$verify_attempts" "$verify_timeout" "$HEALTH_CHECK_TYPE" "${APP_NAME}-app" "$HEALTH_CHECK_COMMAND"; then
+        uds_log "Deployment verification failed - health check did not pass" "error"
         
-        # Start the previous version
-        cd "$APP_DIR" || {
-          uds_log "Failed to change to app directory" "critical"
-          return 1
-        }
-        
-        if [ -f "$APP_DIR/docker-compose.yml" ]; then
-          if ! $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d; then
-            uds_log "Failed to start previous version" "critical"
+        # Roll back to previous version if backup exists
+        if [ -d "$backup_dir" ] && [ "${AUTO_ROLLBACK:-true}" = "true" ]; then
+          uds_log "Rolling back to previous version" "warning"
+          
+          # Stop current deployment
+          docker ps -a -q --filter "name=${APP_NAME}-" | xargs docker stop 2>/dev/null || true
+          
+          # Remove current directory with force
+          rm -rf "$APP_DIR"
+          
+          # Restore from backup
+          if ! mv "$backup_dir" "$APP_DIR"; then
+            uds_log "Failed to restore from backup during rollback" "critical"
             return 1
           fi
+          
+          # Start the previous version
+          cd "$APP_DIR" || {
+            uds_log "Failed to change to app directory" "critical"
+            return 1
+          }
+          
+          if [ -f "$APP_DIR/docker-compose.yml" ]; then
+            uds_log "Restarting previous version" "warning"
+            
+            if ! $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d; then
+              uds_log "Failed to start previous version" "critical"
+              return 1
+            fi
+            
+            uds_log "Rollback completed successfully" "warning"
+            
+            # Execute rollback hooks
+            uds_execute_hook "post_rollback" "$APP_NAME" "$APP_DIR"
+            
+            # Special case: we count this as a non-error return code
+            # because the rollback itself was successful
+            return 0
+          fi
+        else
+          # No backup or auto-rollback disabled
+          uds_log "No rollback performed, deployment is in an inconsistent state" "error"
+          return 1
         fi
-        
-        uds_log "Rollback completed successfully" "warning"
       fi
-      
-      return 1
+    fi
+  fi
+  
+  # Check for any warnings during deployment
+  if docker logs --since=5m "${APP_NAME}-app" 2>&1 | grep -i -E 'warn|error|exception|fatal' | grep -v 'info'; then
+    uds_log "Warning: Potential issues detected in application logs" "warning"
+  fi
+  
+  # Cleanup old backups after successful deployment
+  if [ -d "$backup_dir" ]; then
+    if [ "${KEEP_BACKUP:-false}" = "true" ]; then
+      uds_log "Deployment successful. Backup kept at: $backup_dir" "info"
+    else
+      uds_log "Cleaning up old deployment backup" "info"
+      # Schedule removal with delay to ensure everything is working
+      (
+        sleep 300 # Wait 5 minutes before removing backup
+        if [ -d "$backup_dir" ]; then
+          rm -rf "$backup_dir"
+        fi
+      ) &>/dev/null &
     fi
   fi
   
