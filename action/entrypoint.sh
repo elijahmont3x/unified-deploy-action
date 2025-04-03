@@ -102,9 +102,13 @@ cat > "$CONFIG_FILE" << EOF
   "port": "$(printenv 'INPUT_PORT' || echo '3000')",
   "ssl": $(printenv 'INPUT_SSL' || echo 'true'),
   "ssl_email": "$(printenv 'INPUT_SSL-EMAIL' || echo '')",
+  "ssl_wildcard": $(printenv 'INPUT_SSL-WILDCARD' || echo 'false'),
+  "ssl_dns_provider": "$(printenv 'INPUT_SSL-DNS-PROVIDER' || echo '')",
+  "ssl_dns_credentials": "$(printenv 'INPUT_SSL-DNS-CREDENTIALS' || echo '')",
   "volumes": "$(printenv 'INPUT_VOLUMES' || echo '')",
   "env_vars": $ENV_VARS_JSON,
   "persistent": $(printenv 'INPUT_PERSISTENT' || echo 'false'),
+  "compose_file": "$(printenv 'INPUT_COMPOSE-FILE' || echo '')",
   "use_profiles": $(printenv 'INPUT_USE-PROFILES' || echo 'true'),
   "multi_stage": $(printenv 'INPUT_MULTI-STAGE' || echo 'false'),
   "check_dependencies": $(printenv 'INPUT_CHECK-DEPENDENCIES' || echo 'false'),
@@ -114,6 +118,9 @@ cat > "$CONFIG_FILE" << EOF
   "health_check_command": "$(printenv 'INPUT_HEALTH-CHECK-COMMAND' || echo '')",
   "port_auto_assign": $(printenv 'INPUT_PORT-AUTO-ASSIGN' || echo 'true'),
   "version_tracking": $(printenv 'INPUT_VERSION-TRACKING' || echo 'true'),
+  "secure_mode": $(printenv 'INPUT_SECURE-MODE' || echo 'false'),
+  "check_system": $(printenv 'INPUT_CHECK-SYSTEM' || echo 'false'),
+  "extra_hosts": "$(printenv 'INPUT_EXTRA-HOSTS' || echo '')",
   "plugins": "$(printenv 'INPUT_PLUGINS' || echo '')"
 }
 EOF

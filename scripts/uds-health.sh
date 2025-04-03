@@ -58,7 +58,7 @@ uds_detect_health_check_type() {
   fi
 }
 
-# Check health of a deployed application
+# Base health check function - no retry logic
 uds_check_health() {
   local app_name="$1"
   local port="$2"
@@ -269,3 +269,47 @@ uds_check_health() {
   
   return 1
 }
+
+# Enhanced health check with standardized retry logic
+uds_health_check_with_retry() {
+  local app_name="$1"
+  local port="$2"
+  local health_endpoint="${3:-/health}"
+  local max_attempts="${4:-5}"
+  local timeout="${5:-60}"
+  local health_type="${6:-auto}"
+  local container_name="${7:-${app_name}-app}"
+  local health_command="${8:-}"
+  
+  # Auto-detect health check type if needed
+  if [ "$health_type" = "auto" ]; then
+    health_type=$(uds_detect_health_check_type "$app_name" "$IMAGE" "$health_endpoint")
+  fi
+  
+  # Implement exponential backoff
+  local attempt=1
+  local wait_time=$((timeout / max_attempts))
+  
+  while [ $attempt -le $max_attempts ]; do
+    uds_log "Health check attempt $attempt of $max_attempts (type: $health_type)" "info"
+    
+    if uds_check_health "$app_name" "$port" "$health_endpoint" "$wait_time" "$health_type" "$container_name" "$health_command"; then
+      uds_log "Health check passed on attempt $attempt" "success"
+      return 0
+    fi
+    
+    attempt=$((attempt + 1))
+    wait_time=$((wait_time * 2)) # Exponential backoff
+    
+    if [ $attempt -le $max_attempts ]; then
+      uds_log "Health check failed, waiting ${wait_time}s before retry" "warning"
+      sleep $wait_time
+    fi
+  done
+  
+  uds_log "Health check failed after $max_attempts attempts" "error"
+  return 1
+}
+
+# Export all health check functions
+export -f uds_detect_health_check_type uds_check_health uds_health_check_with_retry

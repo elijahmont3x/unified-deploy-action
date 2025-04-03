@@ -40,6 +40,16 @@ inputs:
   ssl-email:
     description: 'Email for SSL certificate registration'
     required: false
+  ssl-wildcard:
+    description: 'Enable wildcard SSL certificate'
+    required: false
+    default: 'false'
+  ssl-dns-provider:
+    description: 'DNS provider for SSL DNS challenge'
+    required: false
+  ssl-dns-credentials:
+    description: 'Credentials for DNS provider'
+    required: false
   volumes:
     description: 'Volume mappings (comma-separated list of source:target)'
     required: false
@@ -68,9 +78,21 @@ inputs:
     description: 'Health check type (http, tcp, container, command)'
     required: false
     default: 'auto'
+  health-check-timeout:
+    description: 'Timeout in seconds for health check'
+    required: false
+    default: '60'
   health-check-command:
     description: 'Custom command for health check when using command type'
     required: false
+  multi-stage:
+    description: 'Enable multi-stage deployment with validation'
+    required: false
+    default: 'false'
+  check-dependencies:
+    description: 'Check if required dependencies are satisfied'
+    required: false
+    default: 'false'
   port-auto-assign:
     description: 'Automatically assign ports if the specified port is in use'
     required: false
@@ -79,6 +101,14 @@ inputs:
     description: 'Enable version tracking'
     required: false
     default: 'true'
+  secure-mode:
+    description: 'Enable enhanced security features'
+    required: false
+    default: 'false'
+  check-system:
+    description: 'Perform system checks before setup'
+    required: false
+    default: 'false'
   pg-migration-enabled:
     description: 'Enable PostgreSQL migrations'
     required: false

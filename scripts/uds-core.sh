@@ -28,6 +28,7 @@ declare -A UDS_LOG_LEVELS=(
   ["warning"]=2
   ["error"]=3
   ["critical"]=4
+  ["success"]=5
 )
 
 # Current log level
@@ -35,21 +36,23 @@ UDS_LOG_LEVEL="${UDS_LOG_LEVEL:-info}"
 
 # Color definitions for logs
 declare -A UDS_LOG_COLORS=(
-  ["debug"]="\033[0;37m"    # Light gray
+  ["debug"]="\033[0;37m"    # Gray
   ["info"]="\033[0;34m"     # Blue
   ["warning"]="\033[0;33m"  # Yellow
   ["error"]="\033[0;31m"    # Red
-  ["critical"]="\033[1;31m" # Bold red
+  ["critical"]="\033[1;31m" # Bold Red
   ["success"]="\033[0;32m"  # Green
 )
 
 # Reset color
 UDS_COLOR_RESET="\033[0m"
 
-# Plugin registry
+# Enhanced plugin registry with dependencies
 declare -A UDS_PLUGIN_REGISTRY=()
 declare -A UDS_PLUGIN_ARGS=()
 declare -A UDS_PLUGIN_HOOKS=()
+declare -A UDS_PLUGIN_DEPENDENCIES=()
+declare -a UDS_PLUGIN_EXECUTION_ORDER=()
 
 # ============================================================
 # INITIALIZATION FUNCTIONS
@@ -57,123 +60,50 @@ declare -A UDS_PLUGIN_HOOKS=()
 
 # Initialize the UDS environment
 uds_init() {
-  # Create required directories with secure permissions
+  # Create required directories
   mkdir -p "${UDS_CONFIGS_DIR}" "${UDS_LOGS_DIR}" "${UDS_CERTS_DIR}" "${UDS_NGINX_DIR}"
   
-  # Set secure permissions on sensitive directories
-  chmod 700 "${UDS_CONFIGS_DIR}"
-  chmod 700 "${UDS_LOGS_DIR}"
-  chmod 700 "${UDS_CERTS_DIR}"
-  
-  # Initialize service registry if it doesn't exist
+  # Ensure registry file exists
   if [ ! -f "${UDS_REGISTRY_FILE}" ]; then
     echo '{"services":{}}' > "${UDS_REGISTRY_FILE}"
     chmod 600 "${UDS_REGISTRY_FILE}"
   fi
-
-  # Load modules
-  uds_load_modules
-
-  # Discover and register plugins
-  uds_discover_plugins
-
-  # Ensure required tools are available
+  
+  # Check for required tools
   uds_check_requirements
-}
-
-# Load all required modules
-uds_load_modules() {
-  # Load health check module
+  
+  # Load health check module if available
   if [ -f "${UDS_BASE_DIR}/uds-health.sh" ]; then
     source "${UDS_BASE_DIR}/uds-health.sh"
-    # Export the health check functions
-    if type uds_check_health &>/dev/null; then
-      export -f uds_check_health uds_detect_health_check_type
-    fi
+    export -f uds_check_health uds_detect_health_check_type
   fi
 }
 
 # Check for required tools and install missing ones if possible
 uds_check_requirements() {
-  # Check for essential commands
-  local REQUIRED_COMMANDS=("docker" "curl" "jq" "openssl")
-  local MISSING_COMMANDS=()
-
-  for cmd in "${REQUIRED_COMMANDS[@]}"; do
-    if ! command -v "$cmd" &> /dev/null; then
-      MISSING_COMMANDS+=("$cmd")
-    fi
-  done
-
-  if [ ${#MISSING_COMMANDS[@]} -gt 0 ]; then
-    uds_log "Missing required commands: ${MISSING_COMMANDS[*]}" "warning"
-    
-    # Try to install missing dependencies
-    if [ "${AUTO_INSTALL_DEPS:-true}" = "true" ]; then
-      uds_log "Attempting to install missing dependencies..." "info"
-      
-      # Check for package manager
-      if command -v apt-get &> /dev/null; then
-        apt-get update && apt-get install -y ${MISSING_COMMANDS[@]}
-      elif command -v yum &> /dev/null; then
-        yum install -y ${MISSING_COMMANDS[@]}
-      elif command -v dnf &> /dev/null; then
-        dnf install -y ${MISSING_COMMANDS[@]}
-      elif command -v apk &> /dev/null; then
-        apk add --no-cache ${MISSING_COMMANDS[@]}
-      else
-        uds_log "Couldn't detect package manager. Please install dependencies manually:" "error"
-        uds_log "${MISSING_COMMANDS[*]}" "error"
-        return 1
-      fi
-      
-      # Verify installation
-      local STILL_MISSING=()
-      for cmd in "${MISSING_COMMANDS[@]}"; do
-        if ! command -v "$cmd" &> /dev/null; then
-          STILL_MISSING+=("$cmd")
-        fi
-      done
-      
-      if [ ${#STILL_MISSING[@]} -gt 0 ]; then
-        uds_log "Failed to install: ${STILL_MISSING[*]}" "error"
-        return 1
-      else
-        uds_log "Successfully installed missing dependencies" "success"
-      fi
-    else
-      uds_log "Please install these tools before continuing." "error"
-      return 1
-    fi
+  local missing_tools=()
+  
+  # Check for Docker
+  if ! command -v docker &>/dev/null; then
+    missing_tools+=("docker")
   fi
-
-  # Check Docker is running
-  if ! docker info &> /dev/null; then
-    uds_log "Docker is not running or current user doesn't have permission." "error"
-    return 1
+  
+  # Check for Docker Compose
+  if ! $UDS_DOCKER_COMPOSE_CMD version &>/dev/null; then
+    missing_tools+=("docker-compose")
   fi
-
-  # Check Docker Compose is available
-  if ! $UDS_DOCKER_COMPOSE_CMD version &> /dev/null; then
-    uds_log "Docker Compose is not available. Attempting to install..." "warning"
-    
-    if command -v apt-get &> /dev/null; then
-      apt-get update && apt-get install -y docker-compose
-    else
-      # Use Docker's official installation script
-      curl -L "https://github.com/docker/compose/releases/download/v2.12.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-      chmod +x /usr/local/bin/docker-compose
-    fi
-    
-    # Update the Docker Compose command
-    UDS_DOCKER_COMPOSE_CMD=$(command -v docker-compose || echo "docker compose")
-    
-    if ! $UDS_DOCKER_COMPOSE_CMD version &> /dev/null; then
-      uds_log "Failed to install Docker Compose" "error"
-      return 1
-    fi
+  
+  # Check for jq
+  if ! command -v jq &>/dev/null; then
+    missing_tools+=("jq")
   fi
-
+  
+  # Report missing tools
+  if [ ${#missing_tools[@]} -gt 0 ]; then
+    uds_log "Missing required tools: ${missing_tools[*]}" "warning"
+    uds_log "Please install these tools before using UDS" "warning"
+  fi
+  
   return 0
 }
 
@@ -185,7 +115,8 @@ uds_check_requirements() {
 uds_log() {
   local message="$1"
   local level="${2:-info}"
-  local timestamp=$(date "${UDS_DATE_FORMAT}")
+  local timestamp
+  timestamp=$(date "${UDS_DATE_FORMAT}")
   local color="${UDS_LOG_COLORS[$level]:-${UDS_LOG_COLORS[info]}}"
 
   # Sanitize the message to protect sensitive data
@@ -215,13 +146,10 @@ uds_secure_permissions() {
     return 1
   fi
   
-  uds_log "Setting permissions $perms on $target" "debug"
-  chmod "$perms" "$target"
-  
-  # Set owner if running as root
-  if [ "$(id -u)" -eq 0 ]; then
-    chown root:root "$target"
-  fi
+  chmod "$perms" "$target" || {
+    uds_log "Failed to set permissions on $target" "error"
+    return 1
+  }
   
   return 0
 }
@@ -231,20 +159,18 @@ uds_secure_delete() {
   local target="$1"
   
   if [ ! -e "$target" ]; then
-    uds_log "Target does not exist: $target" "debug"
     return 0
   fi
   
-  uds_log "Securely deleting: $target" "debug"
-  
-  # Check for secure deletion tools
-  if command -v shred &> /dev/null; then
+  # Try shred if available (most secure)
+  if command -v shred &>/dev/null; then
     shred -u -z "$target"
-  elif command -v srm &> /dev/null; then
+  # Try srm if available
+  elif command -v srm &>/dev/null; then
     srm -z "$target"
+  # Fallback to simple overwrite and remove
   else
-    # Fallback: overwrite with zeros before deleting
-    dd if=/dev/zero of="$target" bs=1k count=1 conv=notrunc &> /dev/null
+    dd if=/dev/zero of="$target" bs=1k count=1 conv=notrunc &>/dev/null || true
     rm -f "$target"
   fi
   
@@ -258,71 +184,61 @@ uds_secure_delete() {
 # Load configuration from a JSON file
 uds_load_config() {
   local config_file="$1"
-
+  
   if [ ! -f "$config_file" ]; then
     uds_log "Configuration file not found: $config_file" "error"
     return 1
   fi
-
-  # Apply secure permissions to config file
-  uds_secure_permissions "$config_file" 600
   
-  # Read configuration into variables
-  local config_json=$(cat "$config_file")
-
-  APP_NAME=$(echo "$config_json" | jq -r '.app_name // empty')
-  COMMAND=$(echo "$config_json" | jq -r '.command // "deploy"')
-  IMAGE=$(echo "$config_json" | jq -r '.image // empty')
-  TAG=$(echo "$config_json" | jq -r '.tag // "latest"')
-  DOMAIN=$(echo "$config_json" | jq -r '.domain // empty')
-  ROUTE_TYPE=$(echo "$config_json" | jq -r '.route_type // "path"')
-  ROUTE=$(echo "$config_json" | jq -r '.route // ""')
-  PORT=$(echo "$config_json" | jq -r '.port // "3000"')
-  SSL=$(echo "$config_json" | jq -r '.ssl // true')
-  SSL_EMAIL=$(echo "$config_json" | jq -r '.ssl_email // empty')
-  VOLUMES=$(echo "$config_json" | jq -r '.volumes // empty')
-  ENV_VARS=$(echo "$config_json" | jq -r '.env_vars // "{}"')
-  PERSISTENT=$(echo "$config_json" | jq -r '.persistent // false')
-  COMPOSE_FILE=$(echo "$config_json" | jq -r '.compose_file // empty')
-  USE_PROFILES=$(echo "$config_json" | jq -r '.use_profiles // true')
-  EXTRA_HOSTS=$(echo "$config_json" | jq -r '.extra_hosts // empty')
-  HEALTH_CHECK=$(echo "$config_json" | jq -r '.health_check // "/health"')
-  HEALTH_CHECK_TIMEOUT=$(echo "$config_json" | jq -r '.health_check_timeout // "60"')
-  HEALTH_CHECK_TYPE=$(echo "$config_json" | jq -r '.health_check_type // "auto"')
-  HEALTH_CHECK_COMMAND=$(echo "$config_json" | jq -r '.health_check_command // empty')
-  PORT_AUTO_ASSIGN=$(echo "$config_json" | jq -r '.port_auto_assign // true')
-  VERSION_TRACKING=$(echo "$config_json" | jq -r '.version_tracking // true')
-  MAX_LOG_LINES=$(echo "$config_json" | jq -r '.max_log_lines // "100"')
-  PLUGINS=$(echo "$config_json" | jq -r '.plugins // empty')
-
-  # Set the app directory
+  # Validate JSON syntax
+  if ! jq empty "$config_file" 2>/dev/null; then
+    uds_log "Invalid JSON in configuration file" "error"
+    return 1
+  fi
+  
+  # Load configuration values
+  APP_NAME=$(jq -r '.app_name // ""' "$config_file")
+  COMMAND=$(jq -r '.command // "deploy"' "$config_file")
+  IMAGE=$(jq -r '.image // ""' "$config_file")
+  TAG=$(jq -r '.tag // "latest"' "$config_file")
+  DOMAIN=$(jq -r '.domain // ""' "$config_file")
+  ROUTE_TYPE=$(jq -r '.route_type // "path"' "$config_file")
+  ROUTE=$(jq -r '.route // ""' "$config_file")
+  PORT=$(jq -r '.port // "3000"' "$config_file")
+  SSL=$(jq -r '.ssl // true' "$config_file")
+  SSL_EMAIL=$(jq -r '.ssl_email // ""' "$config_file")
+  ENV_VARS=$(jq -r '.env_vars // {}' "$config_file")
+  VOLUMES=$(jq -r '.volumes // ""' "$config_file")
+  PERSISTENT=$(jq -r '.persistent // false' "$config_file")
+  COMPOSE_FILE=$(jq -r '.compose_file // ""' "$config_file")
+  USE_PROFILES=$(jq -r '.use_profiles // true' "$config_file")
+  MULTI_STAGE=$(jq -r '.multi_stage // false' "$config_file")
+  CHECK_DEPENDENCIES=$(jq -r '.check_dependencies // false' "$config_file")
+  HEALTH_CHECK=$(jq -r '.health_check // "/health"' "$config_file")
+  HEALTH_CHECK_TYPE=$(jq -r '.health_check_type // "auto"' "$config_file")
+  HEALTH_CHECK_TIMEOUT=$(jq -r '.health_check_timeout // 60' "$config_file")
+  HEALTH_CHECK_COMMAND=$(jq -r '.health_check_command // ""' "$config_file")
+  PORT_AUTO_ASSIGN=$(jq -r '.port_auto_assign // true' "$config_file")
+  VERSION_TRACKING=$(jq -r '.version_tracking // true' "$config_file")
+  PLUGINS=$(jq -r '.plugins // ""' "$config_file")
+  
+  # Set APP_DIR based on APP_NAME
   APP_DIR="${UDS_BASE_DIR}/${APP_NAME}"
-
-  # Validate required configuration
-  if [ -z "$APP_NAME" ]; then
-    uds_log "app_name is required in configuration" "error"
-    return 1
-  fi
-
-  if [ -z "$DOMAIN" ]; then
-    uds_log "domain is required in configuration" "error"
-    return 1
-  fi
-
-  # Create app directory if it doesn't exist
-  mkdir -p "$APP_DIR"
-
-  # Activate specified plugins
+  
+  # Export variables
+  export APP_NAME COMMAND IMAGE TAG DOMAIN ROUTE_TYPE ROUTE PORT SSL SSL_EMAIL 
+  export VOLUMES PERSISTENT COMPOSE_FILE USE_PROFILES MULTI_STAGE CHECK_DEPENDENCIES
+  export HEALTH_CHECK HEALTH_CHECK_TYPE HEALTH_CHECK_TIMEOUT HEALTH_CHECK_COMMAND 
+  export PORT_AUTO_ASSIGN VERSION_TRACKING MAX_LOG_LINES APP_DIR PLUGINS
+  
+  # Load and discover plugins
+  uds_discover_plugins
+  
+  # Activate configured plugins
   if [ -n "$PLUGINS" ]; then
     uds_activate_plugins "$PLUGINS"
   fi
-
-  # Export configuration for plugins
-  export APP_NAME COMMAND IMAGE TAG DOMAIN ROUTE_TYPE ROUTE PORT SSL SSL_EMAIL
-  export VOLUMES ENV_VARS PERSISTENT COMPOSE_FILE USE_PROFILES EXTRA_HOSTS
-  export HEALTH_CHECK HEALTH_CHECK_TIMEOUT HEALTH_CHECK_TYPE HEALTH_CHECK_COMMAND
-  export PORT_AUTO_ASSIGN VERSION_TRACKING MAX_LOG_LINES APP_DIR
-
+  
   return 0
 }
 
@@ -332,66 +248,61 @@ uds_load_config() {
 
 # Discover and register available plugins
 uds_discover_plugins() {
-  if [ ! -d "$UDS_PLUGINS_DIR" ]; then
-    uds_log "Plugins directory not found: $UDS_PLUGINS_DIR" "warning"
-    mkdir -p "$UDS_PLUGINS_DIR"
+  local plugin_dir="${UDS_PLUGINS_DIR}"
+  
+  if [ ! -d "$plugin_dir" ]; then
+    uds_log "Plugin directory not found: $plugin_dir" "warning"
     return 0
   fi
-
-  uds_log "Discovering plugins..." "debug"
-
-  # Find all plugin files
-  local plugin_files=()
-  while IFS= read -r file; do
-    plugin_files+=("$file")
-  done < <(find "$UDS_PLUGINS_DIR" -name "*.sh" -type f)
-
-  if [ ${#plugin_files[@]} -eq 0 ]; then
-    uds_log "No plugins found" "debug"
-    return 0
-  fi
-
-  # Load each plugin
-  for plugin_file in "${plugin_files[@]}"; do
-    local plugin_name=$(basename "$plugin_file" .sh)
-    
-    # Source the plugin file
-    source "$plugin_file"
-    
-    # Check if the plugin has a register function
-    if type "plugin_register_${plugin_name}" &>/dev/null; then
-      uds_log "Registering plugin: $plugin_name" "debug"
-      UDS_PLUGIN_REGISTRY["$plugin_name"]=1
+  
+  # Clear existing plugin registry
+  UDS_PLUGIN_REGISTRY=()
+  
+  # Find and source plugin files
+  for plugin_file in "$plugin_dir"/*.sh; do
+    if [ -f "$plugin_file" ]; then
+      uds_log "Loading plugin: $(basename "$plugin_file")" "debug"
       
-      # Call the plugin's register function
-      "plugin_register_${plugin_name}"
-    else
-      uds_log "Plugin $plugin_name has no register function, skipping" "warning"
+      # Source the plugin file
+      source "$plugin_file"
+      
+      # Extract plugin name from filename
+      local plugin_name=$(basename "$plugin_file" .sh)
+      local register_func="plugin_register_${plugin_name//-/_}"
+      
+      # Check if registration function exists and call it
+      if declare -f "$register_func" > /dev/null; then
+        uds_log "Registering plugin: $plugin_name" "debug"
+        "$register_func"
+        UDS_PLUGIN_REGISTRY["$plugin_name"]=1
+      else
+        uds_log "Plugin registration function not found: $register_func" "warning"
+      fi
     fi
   done
-
+  
   uds_log "Registered ${#UDS_PLUGIN_REGISTRY[@]} plugins" "debug"
 }
 
 # Activate specific plugins
 uds_activate_plugins() {
-  local plugins_list="$1"
+  local plugins_to_activate="$1"
   
-  # Skip if no plugins specified
-  if [ -z "$plugins_list" ]; then
+  if [ -z "$plugins_to_activate" ]; then
     return 0
   fi
   
-  # Split comma-separated list
-  IFS=',' read -ra PLUGINS_ARRAY <<< "$plugins_list"
+  IFS=',' read -ra PLUGIN_ARRAY <<< "$plugins_to_activate"
   
-  for plugin in "${PLUGINS_ARRAY[@]}"; do
+  for plugin in "${PLUGIN_ARRAY[@]}"; do
+    plugin=$(echo "$plugin" | tr -d ' ')
+    
     if [ -n "${UDS_PLUGIN_REGISTRY[$plugin]:-}" ]; then
-      uds_log "Activating plugin: $plugin" "debug"
+      local activate_func="plugin_activate_${plugin//-/_}"
       
-      # Call the plugin's activate function if it exists
-      if type "plugin_activate_${plugin}" &>/dev/null; then
-        "plugin_activate_${plugin}"
+      if declare -f "$activate_func" > /dev/null; then
+        uds_log "Activating plugin: $plugin" "debug"
+        "$activate_func"
       fi
     else
       uds_log "Plugin not found: $plugin" "warning"
@@ -405,10 +316,10 @@ uds_register_plugin_arg() {
   local arg_name="$2"
   local default_value="$3"
   
-  UDS_PLUGIN_ARGS["${plugin}:${arg_name}"]="$default_value"
+  UDS_PLUGIN_ARGS["${plugin}_${arg_name}"]="$default_value"
   
-  # Create global variable if it doesn't exist
-  if [ -z "${!arg_name:-}" ]; then
+  # If the value isn't already set, set it to the default
+  if [ -z "${!arg_name+x}" ]; then
     eval "$arg_name=\"$default_value\""
     export "$arg_name"
   fi
@@ -422,20 +333,116 @@ uds_register_plugin_hook() {
   
   local hook_key="${hook_name}"
   
-  # Initialize the hook array if it doesn't exist
+  # Initialize hook registry if needed
   if [ -z "${UDS_PLUGIN_HOOKS[$hook_key]:-}" ]; then
-    UDS_PLUGIN_HOOKS["$hook_key"]=""
-  fi
-  
-  # Add the function to the hook
-  if [ -n "${UDS_PLUGIN_HOOKS[$hook_key]}" ]; then
-    UDS_PLUGIN_HOOKS["$hook_key"]="${UDS_PLUGIN_HOOKS[$hook_key]},${hook_function}"
-  else
     UDS_PLUGIN_HOOKS["$hook_key"]="$hook_function"
+  else
+    UDS_PLUGIN_HOOKS["$hook_key"]="${UDS_PLUGIN_HOOKS[$hook_key]},$hook_function"
   fi
 }
 
-# Execute plugin hooks
+# Register a plugin dependency
+uds_register_plugin_dependency() {
+  local plugin="$1"
+  local depends_on="$2"
+  
+  # Initialize dependency array if it doesn't exist
+  if [ -z "${UDS_PLUGIN_DEPENDENCIES[$plugin]:-}" ]; then
+    UDS_PLUGIN_DEPENDENCIES["$plugin"]=""
+  fi
+  
+  # Add the dependency
+  if [ -n "${UDS_PLUGIN_DEPENDENCIES[$plugin]}" ]; then
+    UDS_PLUGIN_DEPENDENCIES["$plugin"]="${UDS_PLUGIN_DEPENDENCIES[$plugin]},${depends_on}"
+  else
+    UDS_PLUGIN_DEPENDENCIES["$plugin"]="$depends_on"
+  fi
+  
+  uds_log "Registered dependency: $plugin depends on $depends_on" "debug"
+}
+
+# Sort plugins in dependency order using topological sort
+uds_sort_plugins() {
+  local plugin_list="$1"
+  
+  # Skip if no plugins specified
+  if [ -z "$plugin_list" ]; then
+    return 0
+  fi
+  
+  # Split comma-separated list
+  IFS=',' read -ra PLUGINS_ARRAY <<< "$plugin_list"
+  
+  # Build dependency graph
+  declare -A graph=()
+  declare -A visited=()
+  declare -A temp_mark=()
+  
+  for plugin in "${PLUGINS_ARRAY[@]}"; do
+    if [ -n "${UDS_PLUGIN_DEPENDENCIES[$plugin]:-}" ]; then
+      IFS=',' read -ra DEPS <<< "${UDS_PLUGIN_DEPENDENCIES[$plugin]}"
+      graph["$plugin"]="${UDS_PLUGIN_DEPENDENCIES[$plugin]}"
+    else
+      graph["$plugin"]=""
+    fi
+    visited["$plugin"]=0
+  done
+  
+  # Reset execution order
+  UDS_PLUGIN_EXECUTION_ORDER=()
+  
+  # Topological sort
+  for plugin in "${!graph[@]}"; do
+    if [ "${visited[$plugin]:-0}" -eq 0 ]; then
+      _uds_visit_plugin "$plugin" graph visited temp_mark
+    fi
+  done
+  
+  # Return sorted list
+  local sorted_plugins=$(IFS=,; echo "${UDS_PLUGIN_EXECUTION_ORDER[*]}")
+  echo "$sorted_plugins"
+}
+
+# Helper function for topological sort
+_uds_visit_plugin() {
+  local plugin="$1"
+  local -n _graph="$2"
+  local -n _visited="$3"
+  local -n _temp="$4"
+  
+  # Check for circular dependency
+  if [ "${_temp[$plugin]:-0}" -eq 1 ]; then
+    uds_log "Circular dependency detected involving plugin: $plugin" "error"
+    return 1
+  fi
+  
+  # Skip if already visited
+  if [ "${_visited[$plugin]:-0}" -eq 1 ]; then
+    return 0
+  fi
+  
+  # Mark temporarily
+  _temp["$plugin"]=1
+  
+  # Visit dependencies
+  if [ -n "${_graph[$plugin]:-}" ]; then
+    IFS=',' read -ra DEPS <<< "${_graph[$plugin]}"
+    for dep in "${DEPS[@]}"; do
+      if [ -n "$dep" ]; then
+        _uds_visit_plugin "$dep" _graph _visited _temp
+      fi
+    done
+  fi
+  
+  # Mark as visited
+  _visited["$plugin"]=1
+  _temp["$plugin"]=0
+  
+  # Add to sorted list (reverse order)
+  UDS_PLUGIN_EXECUTION_ORDER=("$plugin" "${UDS_PLUGIN_EXECUTION_ORDER[@]}")
+}
+
+# Updated execute hook function with dependency-ordered execution
 uds_execute_hook() {
   local hook_name="$1"
   shift
@@ -443,20 +450,52 @@ uds_execute_hook() {
   local hook_key="${hook_name}"
   
   if [ -n "${UDS_PLUGIN_HOOKS[$hook_key]:-}" ]; then
-    # Split comma-separated list of functions
-    IFS=',' read -ra HOOK_FUNCTIONS <<< "${UDS_PLUGIN_HOOKS[$hook_key]}"
+    # Sort plugins by dependency order and then execute hooks
+    local sorted_plugins=$(uds_sort_plugins "$PLUGINS")
     
-    # Execute each hook function
-    for hook_function in "${HOOK_FUNCTIONS[@]}"; do
-      if type "$hook_function" &>/dev/null; then
-        uds_log "Executing hook: $hook_function ($hook_name)" "debug"
-        "$hook_function" "$@"
-      else
-        uds_log "Hook function not found: $hook_function" "warning"
-      fi
-    done
+    if [ -n "$sorted_plugins" ]; then
+      uds_log "Executing hook $hook_name in dependency order: $sorted_plugins" "debug"
+      
+      # First, collect all hook functions
+      local all_hook_functions=()
+      IFS=',' read -ra HOOK_FUNCTIONS <<< "${UDS_PLUGIN_HOOKS[$hook_key]}"
+      
+      # Map hook functions to their plugins
+      declare -A hook_plugin_map=()
+      for hook_function in "${HOOK_FUNCTIONS[@]}"; do
+        # Extract plugin name from function name (assuming format plugin_*_function)
+        local plugin_name=$(echo "$hook_function" | sed -n 's/plugin_\([^_]*\)_.*/\1/p')
+        hook_plugin_map["$hook_function"]="$plugin_name"
+      done
+      
+      # Execute hooks in dependency order
+      IFS=',' read -ra SORTED_PLUGINS <<< "$sorted_plugins"
+      for plugin in "${SORTED_PLUGINS[@]}"; do
+        for hook_function in "${HOOK_FUNCTIONS[@]}"; do
+          if [ "${hook_plugin_map[$hook_function]}" = "$plugin" ]; then
+            uds_log "Executing hook: $hook_function for $hook_name" "debug"
+            if ! "$hook_function" "$@"; then
+              uds_log "Hook execution failed: $hook_function" "warning"
+            fi
+          fi
+        done
+      done
+    else
+      # Fallback to unsorted execution if sorting fails
+      uds_log "Executing hook $hook_name (unsorted)" "debug"
+      IFS=',' read -ra HOOK_FUNCTIONS <<< "${UDS_PLUGIN_HOOKS[$hook_key]}"
+      for hook_function in "${HOOK_FUNCTIONS[@]}"; do
+        uds_log "Executing hook: $hook_function for $hook_name" "debug"
+        if ! "$hook_function" "$@"; then
+          uds_log "Hook execution failed: $hook_function" "warning"
+        fi
+      done
+    fi
   fi
 }
+
+# Export the new functions
+export -f uds_register_plugin_dependency uds_sort_plugins
 
 # ============================================================
 # PORT MANAGEMENT
@@ -467,38 +506,25 @@ uds_is_port_available() {
   local port="$1"
   local host="${2:-localhost}"
   
-  # More comprehensive port availability check
-  # First try direct socket approach
-  if (echo > /dev/tcp/$host/$port) 2>/dev/null; then
-    # Connection succeeded, port is in use
-    return 1
-  fi
-  
-  # Try alternative checks with different tools
+  # Try netstat if available
   if command -v netstat &>/dev/null; then
     if netstat -tuln | grep -q ":$port "; then
-      # Port is in use
       return 1
     fi
+  # Try ss if available
   elif command -v ss &>/dev/null; then
     if ss -tuln | grep -q ":$port "; then
-      # Port is in use
       return 1
     fi
-  elif command -v lsof &>/dev/null; then
-    if lsof -i ":$port" &>/dev/null; then
-      # Port is in use
-      return 1
-    fi
-  elif command -v nmap &>/dev/null; then
-    # Use nmap as a last resort as it's slower
-    if nmap -p "$port" "$host" 2>/dev/null | grep -q "open"; then
-      # Port is in use
+  # Fallback to direct check
+  else
+    if ! (echo >/dev/tcp/$host/$port) 2>/dev/null; then
+      return 0
+    else
       return 1
     fi
   fi
   
-  # Port is available
   return 0
 }
 
@@ -509,20 +535,17 @@ uds_find_available_port() {
   local increment="${3:-1}"
   local host="${4:-localhost}"
   
-  local current_port=$base_port
-  while [ $current_port -le $max_port ]; do
+  local current_port="$base_port"
+  
+  while [ "$current_port" -le "$max_port" ]; do
     if uds_is_port_available "$current_port" "$host"; then
-      # Found an available port
       echo "$current_port"
       return 0
     fi
     
-    # Try the next port
     current_port=$((current_port + increment))
   done
   
-  # No available port found
-  uds_log "No available port found in range $base_port-$max_port" "error"
   return 1
 }
 
@@ -530,61 +553,28 @@ uds_find_available_port() {
 uds_resolve_port_conflicts() {
   local port="$1"
   local app_name="$2"
-  local host_port=""
-  local container_port=""
   
-  # If port auto-assign is disabled, just return the original port
-  if [ "${PORT_AUTO_ASSIGN:-true}" != "true" ]; then
+  if uds_is_port_available "$port"; then
     echo "$port"
     return 0
   fi
   
-  # Check if port contains mapping (host:container)
-  if [[ "$port" == *":"* ]]; then
-    host_port=$(echo "$port" | cut -d: -f1)
-    container_port=$(echo "$port" | cut -d: -f2)
-    uds_log "Checking if host port $host_port is available for $app_name" "info"
+  if [ "${PORT_AUTO_ASSIGN:-true}" = "true" ]; then
+    uds_log "Port $port is already in use, finding an alternative" "warning"
     
-    if uds_is_port_available "$host_port"; then
-      uds_log "Host port $host_port is available" "debug"
-      echo "$port"  # Return original mapping
+    local available_port=$(uds_find_available_port "$port")
+    
+    if [ -n "$available_port" ]; then
+      uds_log "Using alternative port: $available_port" "warning"
+      echo "$available_port"
       return 0
     else
-      uds_log "Host port $host_port is already in use, finding an alternative" "warning"
-      
-      # Find an available host port
-      local new_host_port=$(uds_find_available_port $((host_port + 1)))
-      if [ -n "$new_host_port" ]; then
-        uds_log "Assigned alternative host port $new_host_port for $app_name" "info"
-        echo "${new_host_port}:${container_port}"
-        return 0
-      else
-        uds_log "Failed to find an available host port for $app_name" "error"
-        return 1
-      fi
+      uds_log "Failed to find an available port" "error"
+      return 1
     fi
   else
-    # Standard single port
-    uds_log "Checking if port $port is available for $app_name" "info"
-    
-    if uds_is_port_available "$port"; then
-      uds_log "Port $port is available" "debug"
-      echo "$port"
-      return 0
-    else
-      uds_log "Port $port is already in use, finding an alternative" "warning"
-      
-      # Try to find an available port
-      local new_port=$(uds_find_available_port $((port + 1)))
-      if [ -n "$new_port" ]; then
-        uds_log "Assigned alternative port $new_port for $app_name" "info"
-        echo "$new_port"
-        return 0
-      else
-        uds_log "Failed to find an available port for $app_name" "error"
-        return 1
-      fi
-    fi
+    uds_log "Port $port is already in use and auto-assign is disabled" "error"
+    return 1
   fi
 }
 
@@ -898,75 +888,6 @@ uds_reload_nginx() {
 # SERVICE REGISTRY FUNCTIONS
 # ============================================================
 
-# Sanitize sensitive environment variables for logging
-uds_sanitize_env_vars() {
-  local input="$1"
-  local sanitized="$input"
-  
-  # Patterns to sanitize - expanded to cover more sensitive data patterns
-  local patterns=(
-    "password=[^\"'& ]*"
-    "passwd=[^\"'& ]*"
-    "pass=[^\"'& ]*"
-    "pwd=[^\"'& ]*"
-    "secret=[^\"'& ]*"
-    "key=[^\"'& ]*"
-    "apikey=[^\"'& ]*"
-    "api_key=[^\"'& ]*"
-    "api-key=[^\"'& ]*"
-    "access_key=[^\"'& ]*"
-    "access-key=[^\"'& ]*"
-    "token=[^\"'& ]*"
-    "auth=[^\"'& ]*"
-    "access_token=[^\"'& ]*"
-    "refresh_token=[^\"'& ]*"
-    "CLIENT_SECRET=[^\"'& ]*"
-    "IDENTITY_KEY=[^\"'& ]*"
-    "SIGNING_KEY=[^\"'& ]*"
-    "ENCRYPTION_KEY=[^\"'& ]*"
-    "LICENSE_KEY=[^\"'& ]*"
-    "ACCOUNT_KEY=[^\"'& ]*"
-    "MASTER_KEY=[^\"'& ]*"
-    "ADMIN_KEY=[^\"'& ]*"
-    "AWS_ACCESS_KEY=[^\"'& ]*"
-    "AWS_SECRET_KEY=[^\"'& ]*"
-    "AZURE_KEY=[^\"'& ]*"
-    "GOOGLE_API_KEY=[^\"'& ]*"
-    "SALESFORCE_TOKEN=[^\"'& ]*"
-    "STRIPE_KEY=[^\"'& ]*"
-    "STRIPE_SECRET=[^\"'& ]*"
-    "PAYPAL_CLIENT_ID=[^\"'& ]*"
-    "PAYPAL_SECRET=[^\"'& ]*"
-    "TWILIO_AUTH_TOKEN=[^\"'& ]*"
-    "MAILCHIMP_API_KEY=[^\"'& ]*"
-    "OAUTH_CLIENT_SECRET=[^\"'& ]*"
-    "SENDGRID_API_KEY=[^\"'& ]*"
-    "API_SECRET=[^\"'& ]*"
-  )
-  
-  # Apply sanitization to each pattern
-  for pattern in "${patterns[@]}"; do
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)/\1=******/g")
-  done
-  
-  # Sanitize JSON patterns in env vars - expanded to cover more keys
-  sanitized=$(echo "$sanitized" | sed -E 's/"(password|secret|token|key|apikey|api_key|access_token|auth|cert|private_key|ssh_key)": *"[^"]*"/"\\1": "******"/g')
-  
-  # Sanitize connection strings with various formats
-  sanitized=$(echo "$sanitized" | sed -E 's|([a-zA-Z]+://[^:]+:)[^@]+(@)|\\1******\\2|g')
-  
-  # Sanitize potential Base64 encoded secrets or JWTs (common pattern: long string with periods)
-  sanitized=$(echo "$sanitized" | sed -E 's/eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/********/g')
-  
-  # Sanitize credit card numbers
-  sanitized=$(echo "$sanitized" | sed -E 's/[0-9]{13,19}/XXXX-XXXX-XXXX-XXXX/g')
-  
-  # Sanitize auth headers in HTTP requests (Bearer tokens)
-  sanitized=$(echo "$sanitized" | sed -E 's/(Authorization: Bearer) [a-zA-Z0-9._-]+/\1 ********/g')
-  
-  echo "$sanitized"
-}
-
 # Register a service in the registry
 uds_register_service() {
   local app_name="$1"
@@ -1104,8 +1025,40 @@ uds_list_services() {
   return 0
 }
 
-# Initialize the UDS system
-uds_init
+# Sanitize sensitive environment variables for logging
+uds_sanitize_env_vars() {
+  local input="$1"
+  local sanitized="$input"
+  
+  # Enhanced patterns to sanitize - expanded to cover more sensitive data patterns
+  local patterns=(
+    "[A-Za-z0-9_-]+_PASSWORD"
+    "[A-Za-z0-9_-]+_PASS"
+    "[A-Za-z0-9_-]+_SECRET"
+    "[A-Za-z0-9_-]+_KEY"
+    "[A-Za-z0-9_-]+_TOKEN"
+    "[A-Za-z0-9_-]+_CREDENTIALS"
+    "PASSWORD[A-Za-z0-9_-]*"
+    "ACCESS_TOKEN[A-Za-z0-9_-]*"
+    "SECRET[A-Za-z0-9_-]*"
+    "APIKEY[A-Za-z0-9_-]*"
+    "API_KEY[A-Za-z0-9_-]*"
+    "PRIVATE_KEY[A-Za-z0-9_-]*"
+    "AUTH[A-Za-z0-9_-]*_TOKEN"
+    "TOKEN[A-Za-z0-9_-]*"
+  )
+  
+  # Apply sanitization to each pattern
+  for pattern in "${patterns[@]}"; do
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=([^[:space:]]+)/\1=******/g")
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *([^[:space:]]+)/\1: ******/g")
+  done
+  
+  # Enhanced JSON pattern sanitization - covers more keys and formats
+  sanitized=$(echo "$sanitized" | sed -E 's/"(password|passwd|pass|secret|token|apitoken|key|apikey|api_key|access_token|auth|credentials|cert|private_key|ssh_key|encryption_key)"\s*:\s*"[^"]*"/"\\1": "******"/g')
+  
+  echo "$sanitized"
+}
 
 # Export functions for use in other scripts
 export -f uds_log uds_load_config uds_register_plugin_arg uds_register_plugin_hook
@@ -1114,3 +1067,6 @@ export -f uds_create_nginx_config uds_reload_nginx
 export -f uds_register_service uds_unregister_service uds_get_service uds_list_services
 export -f uds_is_port_available uds_find_available_port uds_resolve_port_conflicts
 export -f uds_secure_permissions uds_secure_delete
+
+# Initialize on load
+uds_init

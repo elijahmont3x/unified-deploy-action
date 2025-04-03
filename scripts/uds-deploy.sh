@@ -336,62 +336,48 @@ uds_multi_stage_deployment() {
     HEALTH_CHECK_TYPE="$detected_type"
   fi
   
-  # Perform health check with exponential backoff
-  if [ "$HEALTH_CHECK_TYPE" != "none" ] && type uds_check_health &>/dev/null; then
-    local container_name="${APP_NAME}-app"
-    local attempt=1
-    local max_attempts=5
-    local wait_time=10
-    
-    while [ $attempt -le $max_attempts ]; do
-      uds_log "Health check attempt $attempt of $max_attempts" "info"
+  # Use consolidated health check function with retry logic
+  if [ "$HEALTH_CHECK_TYPE" != "none" ] && type uds_health_check_with_retry &>/dev/null; then
+    if uds_health_check_with_retry "$APP_NAME" "$PORT" "$HEALTH_CHECK" "5" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "${APP_NAME}-app" "$HEALTH_CHECK_COMMAND"; then
+      uds_log "Health check passed" "success"
       
-      if uds_check_health "$APP_NAME" "$PORT" "$HEALTH_CHECK" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "$container_name" "$HEALTH_CHECK_COMMAND"; then
-        uds_log "Health check passed on attempt $attempt" "success"
-        
-        # Keep backup for a short time in case of issues
-        if [ -d "$backup_dir" ]; then
-          uds_log "Deployment successful. Backup will be removed automatically after 1 hour." "info"
-          (sleep 3600 && rm -rf "$backup_dir") &
-        fi
-        
-        uds_log "Multi-stage deployment completed successfully" "success"
-        return 0
+      # Keep backup for a short time in case of issues
+      if [ -d "$backup_dir" ]; then
+        uds_log "Deployment successful. Backup will be removed automatically after 1 hour." "info"
+        (sleep 3600 && rm -rf "$backup_dir") &
       fi
       
-      attempt=$((attempt + 1))
-      uds_log "Health check failed, waiting ${wait_time}s before retry" "warning"
-      sleep $wait_time
-      wait_time=$((wait_time * 2)) # Exponential backoff
-    done
-    
-    uds_log "Health check failed after $max_attempts attempts, rolling back" "error"
-    
-    # Execute health-check-failed hooks
-    uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
-    
-    # Rollback to previous version
-    if [ -d "$backup_dir" ]; then
-      uds_log "Rolling back to previous version" "warning"
-      rm -rf "$APP_DIR" || true
-      mv "$backup_dir" "$APP_DIR" || {
-        uds_log "Failed to restore backup during rollback" "critical"
-        return 1
-      }
+      uds_log "Multi-stage deployment completed successfully" "success"
+      return 0
+    else
+      uds_log "Health check failed, rolling back" "error"
       
-      # Start the previous version
-      cd "$APP_DIR"
-      if [ -f "$APP_DIR/docker-compose.yml" ]; then
-        $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d || {
-          uds_log "Failed to start previous version" "critical"
+      # Execute health-check-failed hooks
+      uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
+      
+      # Rollback to previous version
+      if [ -d "$backup_dir" ]; then
+        uds_log "Rolling back to previous version" "warning"
+        rm -rf "$APP_DIR" || true
+        mv "$backup_dir" "$APP_DIR" || {
+          uds_log "Failed to restore backup during rollback" "critical"
           return 1
         }
+        
+        # Start the previous version
+        cd "$APP_DIR"
+        if [ -f "$APP_DIR/docker-compose.yml" ]; then
+          $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d || {
+            uds_log "Failed to start previous version" "critical"
+            return 1
+          }
+        fi
+        
+        uds_log "Rollback completed successfully" "warning"
       fi
       
-      uds_log "Rollback completed successfully" "warning"
+      return 1
     fi
-    
-    return 1
   fi
   
   uds_log "Multi-stage deployment completed successfully" "success"

@@ -8,7 +8,7 @@ UDS is a flexible deployment system that allows you to easily deploy and manage 
 
 - SSL certificate management with wildcard support
 - Dynamic routing with path and subdomain options
-- Advanced health checks with auto-detection
+- Advanced health checks with auto-detection and intelligent retry logic
 - Plugin system for extending functionality
 - Multi-stage deployments with validation
 - Version tracking and rollback capabilities

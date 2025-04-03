@@ -171,11 +171,15 @@ When using UDS as a GitHub Action, the inputs are mapped to configuration option
 | `port` | `port` |
 | `ssl` | `ssl` |
 | `ssl-email` | `ssl_email` |
+| `ssl-wildcard` | `ssl_wildcard` |
+| `ssl-dns-provider` | `ssl_dns_provider` |
+| `ssl-dns-credentials` | `ssl_dns_credentials` |
 | `volumes` | `volumes` |
 | `env-vars` | `env_vars` |
 | `persistent` | `persistent` |
 | `compose-file` | `compose_file` |
 | `use-profiles` | `use_profiles` |
+| `extra-hosts` | `extra_hosts` |
 | `health-check` | `health_check` |
 | `health-check-type` | `health_check_type` |
 | `health-check-timeout` | `health_check_timeout` |
@@ -184,6 +188,8 @@ When using UDS as a GitHub Action, the inputs are mapped to configuration option
 | `check-dependencies` | `check_dependencies` |
 | `port-auto-assign` | `port_auto_assign` |
 | `version-tracking` | `version_tracking` |
+| `secure-mode` | `secure_mode` |
+| `check-system` | `check_system` |
 | `plugins` | `plugins` |
 
 ## Sample Configurations

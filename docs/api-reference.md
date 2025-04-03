@@ -209,7 +209,7 @@ Finds an available port starting from a base port.
 **Example:**
 ```bash
 local port=$(uds_find_available_port 3000)
-if [ -n "$port" ]; then
+if [ -n "$port"]; then
   echo "Found available port: $port"
 fi
 ```
@@ -338,7 +338,7 @@ uds_secure_delete "$TEMP_FILE"
 
 ## Health Check Functions
 
-These functions are available when the health check module is loaded.
+These functions are available in the consolidated health check module (`uds-health.sh`):
 
 ```bash
 uds_detect_health_check_type(app_name, image, health_endpoint)
@@ -360,17 +360,18 @@ local health_type=$(uds_detect_health_check_type "$APP_NAME" "$IMAGE" "$HEALTH_C
 ```
 
 ```bash
-uds_check_health(app_name, port, health_endpoint, timeout, health_type, container_name, health_command)
+uds_health_check_with_retry(app_name, port, health_endpoint, max_attempts, timeout, health_type, container_name, health_command)
 ```
 
-Checks the health of a deployed application.
+Enhanced health check with exponential backoff and retry logic.
 
 **Parameters:**
 - `app_name`: Application name
 - `port`: Container port
 - `health_endpoint`: Health check endpoint (default: `/health`)
-- `timeout`: Maximum time to wait (default: `60`)
-- `health_type`: Health check type (default: `http`)
+- `max_attempts`: Maximum number of attempts (default: `5`)
+- `timeout`: Maximum time to wait per attempt (default: `60`)
+- `health_type`: Health check type (default: `auto`)
 - `container_name`: Container name (optional)
 - `health_command`: Custom health check command (optional)
 
@@ -379,7 +380,7 @@ Checks the health of a deployed application.
 
 **Example:**
 ```bash
-if uds_check_health "$APP_NAME" "$PORT" "$HEALTH_CHECK" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE"; then
+if uds_health_check_with_retry "$APP_NAME" "$PORT" "$HEALTH_CHECK" "5" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE"; then
   uds_log "Application is healthy" "success"
 else
   uds_log "Application health check failed" "error"
