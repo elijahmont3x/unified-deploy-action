@@ -19,6 +19,8 @@ plugin_register_security_manager() {
   uds_register_plugin_arg "security_manager" "SECURITY_ENFORCE_TLS" "false"
   uds_register_plugin_arg "security_manager" "SECURITY_FILE_PERMISSIONS" "true"
   uds_register_plugin_arg "security_manager" "SECURITY_CHECK_DEPS" "false"
+  uds_register_plugin_arg "security_manager" "SECURITY_SCANNER_FALLBACK" "true"
+  uds_register_plugin_arg "security_manager" "SECURITY_SCANNER_TIMEOUT" "300"
   
   # Register plugin hooks
   uds_register_plugin_hook "security_manager" "pre_deploy" "plugin_security_pre_deploy"
@@ -172,7 +174,79 @@ enforce_secure_permissions() {
   return 0
 }
 
-# Check for security vulnerabilities in dependencies
+# Check for available security scanners and install if possible
+detect_security_scanners() {
+  uds_log "Detecting available security scanners" "debug"
+  
+  local available_scanners=()
+  
+  # Check for common security scanners
+  if command -v trivy &>/dev/null; then
+    available_scanners+=("trivy")
+  fi
+  
+  if command -v grype &>/dev/null; then
+    available_scanners+=("grype")
+  fi
+  
+  if command -v docker &>/dev/null && docker scan --version &>/dev/null; then
+    available_scanners+=("docker")
+  fi
+  
+  if command -v clair-scanner &>/dev/null; then
+    available_scanners+=("clair")
+  fi
+  
+  # If no scanners are available and fallback is enabled, try to install one
+  if [ ${#available_scanners[@]} -eq 0 ] && [ "${SECURITY_SCANNER_FALLBACK}" = "true" ]; then
+    uds_log "No security scanners found. Attempting to install Trivy..." "info"
+    
+    # Try to install Trivy as a fallback
+    if command -v apt-get &>/dev/null; then
+      # For Debian/Ubuntu
+      apt-get update && apt-get install -y wget apt-transport-https gnupg
+      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add -
+      echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee -a /etc/apt/sources.list.d/trivy.list
+      apt-get update && apt-get install -y trivy
+      
+      if command -v trivy &>/dev/null; then
+        available_scanners+=("trivy")
+        uds_log "Successfully installed Trivy scanner" "success"
+      fi
+    elif command -v yum &>/dev/null; then
+      # For CentOS/RHEL
+      rpm -q trivy || {
+        rpm -i https://github.com/aquasecurity/trivy/releases/download/v0.34.0/trivy_0.34.0_Linux-64bit.rpm 2>/dev/null || true
+      }
+      
+      if command -v trivy &>/dev/null; then
+        available_scanners+=("trivy")
+        uds_log "Successfully installed Trivy scanner" "success"
+      fi
+    elif command -v apk &>/dev/null; then
+      # For Alpine
+      apk add --no-cache trivy
+      
+      if command -v trivy &>/dev/null; then
+        available_scanners+=("trivy")
+        uds_log "Successfully installed Trivy scanner" "success"
+      fi
+    else
+      uds_log "Unable to install security scanner. No supported package manager found." "warning"
+    fi
+  fi
+  
+  # Return available scanners as a comma-separated list
+  if [ ${#available_scanners[@]} -gt 0 ]; then
+    echo "${available_scanners[*]}" | tr ' ' ','
+    return 0
+  else
+    uds_log "No security scanners available" "warning"
+    return 1
+  fi
+}
+
+# Check for security vulnerabilities in dependencies with enhanced error handling
 check_dependencies_security() {
   uds_log "Checking dependencies for security vulnerabilities" "info"
   
@@ -182,22 +256,44 @@ check_dependencies_security() {
     return 0
   fi
   
-  # Check for Docker image security scanner tools
+  # Detect available security scanners
+  local scanners=$(detect_security_scanners)
+  local scanner_exit_code=$?
+  
+  if [ $scanner_exit_code -ne 0 ] || [ -z "$scanners" ]; then
+    uds_log "No security scanners available. Security checks will be skipped." "warning"
+    log_audit_event "security" "vulnerability_check_skipped" "No security scanners available"
+    
+    # Continue without error if ENFORCE_SECURITY_CHECKS is not enabled
+    if [ "${ENFORCE_SECURITY_CHECKS:-false}" = "true" ]; then
+      uds_log "Security checks are enforced but no scanner is available" "error"
+      return 1
+    else
+      uds_log "Proceeding without security scanning" "warning"
+      return 0
+    fi
+  fi
+  
+  # Choose the best available scanner
   local scanner_tool=""
+  IFS=',' read -ra AVAILABLE_SCANNERS <<< "$scanners"
   
-  if command -v trivy &>/dev/null; then
-    scanner_tool="trivy"
-  elif command -v grype &>/dev/null; then
-    scanner_tool="grype"
-  elif command -v docker scan &>/dev/null; then
-    scanner_tool="docker"
-  fi
+  # Prioritize scanners (trivy > grype > docker > clair)
+  for preferred in "trivy" "grype" "docker" "clair"; do
+    for available in "${AVAILABLE_SCANNERS[@]}"; do
+      if [ "$available" = "$preferred" ]; then
+        scanner_tool="$available"
+        break 2
+      fi
+    done
+  done
   
-  # Skip if no scanner is available
   if [ -z "$scanner_tool" ]; then
-    uds_log "No security scanner found. Skipping dependency security check." "warning"
-    return 0
+    # Fallback to first available scanner if none of the preferred ones are found
+    scanner_tool="${AVAILABLE_SCANNERS[0]}"
   fi
+  
+  uds_log "Using $scanner_tool for security scanning" "info"
   
   # Extract image information
   local images=()
@@ -213,42 +309,202 @@ check_dependencies_security() {
     images=("$IMAGE:$TAG")
   fi
   
+  # Set up timeout command if available
+  local timeout_cmd=""
+  if command -v timeout &>/dev/null; then
+    timeout_cmd="timeout ${SECURITY_SCANNER_TIMEOUT}"
+  else
+    uds_log "Timeout command not available, scans may run indefinitely" "warning"
+  fi
+  
   # Scan each image
   local vulnerable=false
+  local scan_success=false
+  local scan_results_dir="${UDS_LOGS_DIR}/security-scans"
+  mkdir -p "$scan_results_dir"
   
   for image in "${images[@]}"; do
     uds_log "Scanning image $image for vulnerabilities" "info"
     
     local scan_result=0
     local scan_output=""
+    local scan_file="${scan_results_dir}/scan_$(echo "$image" | tr ':/' '_')_$(date +%Y%m%d%H%M%S).json"
     
     case "$scanner_tool" in
       trivy)
-        scan_output=$(trivy image --severity HIGH,CRITICAL --no-progress "$image" 2>&1) || scan_result=$?
+        if [ -n "$timeout_cmd" ]; then
+          scan_output=$($timeout_cmd trivy image --severity HIGH,CRITICAL --format json --output "$scan_file" "$image" 2>&1) || scan_result=$?
+        else
+          scan_output=$(trivy image --severity HIGH,CRITICAL --format json --output "$scan_file" "$image" 2>&1) || scan_result=$?
+        fi
+        
+        # Analyze the results
+        if [ $scan_result -eq 0 ]; then
+          scan_success=true
+          # Check if there are any vulnerabilities
+          if [ -f "$scan_file" ] && jq -e '.Results[] | select(.Vulnerabilities != null and .Vulnerabilities | length > 0)' "$scan_file" >/dev/null 2>&1; then
+            vulnerable=true
+            
+            # Count vulnerabilities by severity
+            local vuln_count=$(jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities | length' "$scan_file" | awk '{sum+=$1} END {print sum}')
+            local crit_count=$(jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities | map(select(.Severity == "CRITICAL")) | length' "$scan_file" | awk '{sum+=$1} END {print sum}')
+            local high_count=$(jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities | map(select(.Severity == "HIGH")) | length' "$scan_file" | awk '{sum+=$1} END {print sum}')
+            
+            uds_log "Found $vuln_count vulnerabilities ($crit_count critical, $high_count high) in $image" "error"
+            
+            # Log a sample of critical vulnerabilities
+            if [ "$crit_count" -gt 0 ]; then
+              uds_log "Sample of critical vulnerabilities:" "error"
+              jq -r '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities | map(select(.Severity == "CRITICAL")) | .[0:5] | .[] | "- \(.VulnerabilityID): \(.Title)"' "$scan_file"
+            fi
+            
+            # Log the scan file location
+            uds_log "Full vulnerability report saved to: $scan_file" "info"
+            log_audit_event "security" "vulnerability_found" "Found $vuln_count vulnerabilities in image $image"
+          else
+            uds_log "No high or critical vulnerabilities found in $image" "success"
+          fi
+        elif [ $scan_result -eq 124 ] || [ $scan_result -eq 137 ]; then
+          # Timeout occurred
+          uds_log "Security scan timed out after ${SECURITY_SCANNER_TIMEOUT} seconds" "warning"
+          log_audit_event "security" "vulnerability_scan_timeout" "Security scan timed out for image $image"
+        else
+          uds_log "Security scan failed with exit code $scan_result: $scan_output" "error"
+          log_audit_event "security" "vulnerability_scan_failed" "Security scan failed for image $image: $scan_output"
+        fi
         ;;
+        
       grype)
-        scan_output=$(grype "$image" -o json --fail-on high 2>&1) || scan_result=$?
+        if [ -n "$timeout_cmd" ]; then
+          scan_output=$($timeout_cmd grype "$image" -o json --file "$scan_file" --fail-on high 2>&1) || scan_result=$?
+        else
+          scan_output=$(grype "$image" -o json --file "$scan_file" --fail-on high 2>&1) || scan_result=$?
+        fi
+        
+        # Analyze the results
+        if [ -f "$scan_file" ]; then
+          scan_success=true
+          # Check if there are vulnerabilities (exit code 1 means vulnerabilities found)
+          if [ $scan_result -eq 1 ]; then
+            vulnerable=true
+            
+            # Count vulnerabilities
+            local vuln_count=$(jq '.matches | length' "$scan_file")
+            local crit_count=$(jq '.matches | map(select(.vulnerability.severity == "Critical")) | length' "$scan_file")
+            local high_count=$(jq '.matches | map(select(.vulnerability.severity == "High")) | length' "$scan_file")
+            
+            uds_log "Found $vuln_count vulnerabilities ($crit_count critical, $high_count high) in $image" "error"
+            
+            # Log a sample of critical vulnerabilities
+            if [ "$crit_count" -gt 0 ]; then
+              uds_log "Sample of critical vulnerabilities:" "error"
+              jq -r '.matches | map(select(.vulnerability.severity == "Critical")) | .[0:5] | .[] | "- \(.vulnerability.id): \(.vulnerability.description)"' "$scan_file"
+            fi
+            
+            # Log the scan file location
+            uds_log "Full vulnerability report saved to: $scan_file" "info"
+            log_audit_event "security" "vulnerability_found" "Found $vuln_count vulnerabilities in image $image"
+          elif [ $scan_result -eq 0 ]; then
+            uds_log "No high or critical vulnerabilities found in $image" "success"
+          else
+            uds_log "Security scan failed with exit code $scan_result: $scan_output" "error"
+            log_audit_event "security" "vulnerability_scan_failed" "Security scan failed for image $image: $scan_output"
+          fi
+        else
+          uds_log "Security scan failed to produce output file: $scan_output" "error"
+          log_audit_event "security" "vulnerability_scan_failed" "Security scan failed for image $image: $scan_output"
+        fi
         ;;
+        
       docker)
-        scan_output=$(docker scan "$image" --severity=high 2>&1) || scan_result=$?
+        if [ -n "$timeout_cmd" ]; then
+          scan_output=$($timeout_cmd docker scan --json --severity=high "$image" > "$scan_file" 2>&1) || scan_result=$?
+        else
+          scan_output=$(docker scan --json --severity=high "$image" > "$scan_file" 2>&1) || scan_result=$?
+        fi
+        
+        # Analyze the results
+        if [ -f "$scan_file" ] && [ -s "$scan_file" ]; then
+          scan_success=true
+          # Check if vulnerabilities were found
+          if grep -q "vulnerability" "$scan_file"; then
+            vulnerable=true
+            
+            # Count vulnerabilities (docker scan format is different)
+            # Use grep for basic counting as the JSON format varies between versions
+            local vuln_count=$(grep -c "vulnerability" "$scan_file" || echo "unknown")
+            local crit_count=$(grep -c "critical" "$scan_file" || echo "unknown")
+            local high_count=$(grep -c "high" "$scan_file" || echo "unknown")
+            
+            uds_log "Found vulnerabilities ($crit_count critical, $high_count high) in $image" "error"
+            
+            # Log the scan file location
+            uds_log "Full vulnerability report saved to: $scan_file" "info"
+            log_audit_event "security" "vulnerability_found" "Found vulnerabilities in image $image"
+          else
+            uds_log "No high or critical vulnerabilities found in $image" "success"
+          fi
+        else
+          uds_log "Security scan failed or produced no output: $scan_output" "error"
+          log_audit_event "security" "vulnerability_scan_failed" "Security scan failed for image $image: $scan_output"
+        fi
+        ;;
+        
+      clair)
+        # Clair scanner requires more setup and has different output format
+        uds_log "Clair scanning requires a running Clair server. Using basic scan..." "warning"
+        
+        # Fallback to a simple docker inspect for available CVE labels
+        local inspect_output=$(docker inspect "$image" 2>/dev/null | jq -r '.[0].Config.Labels | to_entries | map(select(.key | contains("cve") or contains("vuln")))' 2>/dev/null)
+        
+        if [ -n "$inspect_output" ] && [ "$inspect_output" != "[]" ]; then
+          scan_success=true
+          vulnerable=true
+          echo "$inspect_output" > "$scan_file"
+          
+          uds_log "Found vulnerability labels in image metadata" "warning"
+          uds_log "Full metadata saved to: $scan_file" "info"
+          log_audit_event "security" "vulnerability_found" "Found vulnerability labels in image $image"
+        else
+          uds_log "No vulnerability information available for $image with clair scanner" "warning"
+          log_audit_event "security" "vulnerability_scan_limited" "Limited scan capabilities for image $image"
+        fi
+        ;;
+        
+      *)
+        uds_log "Unknown scanner: $scanner_tool" "error"
+        log_audit_event "security" "vulnerability_scan_failed" "Unknown scanner: $scanner_tool"
         ;;
     esac
-    
-    if [ $scan_result -ne 0 ]; then
-      vulnerable=true
-      uds_log "Security vulnerabilities found in $image:" "error"
-      echo "$scan_output" | grep -i 'vulnerability\|cve' | head -n 10
-      log_audit_event "security" "vulnerability_found" "Vulnerabilities found in image $image"
-    else
-      uds_log "No high severity vulnerabilities found in $image" "success"
-    fi
   done
   
-  if [ "$vulnerable" = "true" ]; then
-    uds_log "Security vulnerabilities found in dependencies. Review and update images." "warning"
-    return 1
+  # Final results
+  if ! $scan_success; then
+    uds_log "Failed to perform security scans on images" "error"
+    
+    # Continue without error if ENFORCE_SECURITY_CHECKS is not enabled
+    if [ "${ENFORCE_SECURITY_CHECKS:-false}" = "true" ]; then
+      return 1
+    else
+      uds_log "Proceeding despite scan failures" "warning"
+      return 0
+    fi
   fi
   
+  if [ "$vulnerable" = "true" ]; then
+    uds_log "Security vulnerabilities found in dependencies. Review reports in ${scan_results_dir}" "warning"
+    
+    # Fail if ENFORCE_SECURITY_CHECKS is enabled
+    if [ "${ENFORCE_SECURITY_CHECKS:-false}" = "true" ]; then
+      uds_log "Security checks are enforced. Deployment blocked due to vulnerabilities." "error"
+      return 1
+    else
+      uds_log "Proceeding despite security vulnerabilities" "warning"
+      return 0
+    fi
+  fi
+  
+  uds_log "Security scan completed successfully with no high or critical vulnerabilities" "success"
   return 0
 }
 
@@ -392,8 +648,8 @@ plugin_security_pre_deploy() {
       uds_log "Security check failed for dependencies" "error"
       if [ "${ENFORCE_SECURITY_CHECKS:-false}" = "true" ]; then
         return 1
-      }
-    fi
+      fi
+    }
   fi
   
   return 0

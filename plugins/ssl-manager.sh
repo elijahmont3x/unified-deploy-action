@@ -347,10 +347,10 @@ EOL
   # Set secure permissions for private key
   chmod 600 "${cert_dir}/privkey.pem"
   
-  # Generate self-signed certificate with longer validity period
+  # Generate self-signed certificate with 1 year validity (updated from 3650 days)
   openssl req -new -x509 -sha256 -key "${cert_dir}/privkey.pem" \
     -out "${cert_dir}/fullchain.pem" \
-    -days 3650 \
+    -days 365 \
     -config "$ssl_config" || {
     uds_log "Failed to generate self-signed certificate" "error"
     rm -f "$ssl_config"
