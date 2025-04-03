@@ -16,7 +16,7 @@ name: Deploy with UDS
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 jobs:
   deploy:

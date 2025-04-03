@@ -34,6 +34,13 @@ error_exit() {
   exit 1
 }
 
+# Set up GitHub Actions output
+set_output() {
+  local name="$1"
+  local value="$2"
+  echo "${name}=${value}" >> $GITHUB_OUTPUT
+}
+
 # Validate required inputs
 if [ -z "${INPUT_APP_NAME}" ] && [ -z "$(printenv 'INPUT_APP-NAME')" ]; then
   error_exit "app-name is required"
@@ -117,6 +124,12 @@ if ! echo "$ENV_VARS_JSON" | jq empty 2>/dev/null; then
   ENV_VARS_JSON="{}"
 fi
 
+# Process domain with check for empty value
+DOMAIN="$(printenv 'INPUT_DOMAIN' || echo '')"
+if [ -z "$DOMAIN" ]; then
+  error_exit "domain is required"
+fi
+
 # Create the basic config structure with common fields
 cat > "$CONFIG_FILE" << EOF || error_exit "Failed to write config file"
 {
@@ -124,7 +137,7 @@ cat > "$CONFIG_FILE" << EOF || error_exit "Failed to write config file"
   "app_name": "$APP_NAME",
   "image": "$(printenv 'INPUT_IMAGE' || echo '')",
   "tag": "$(printenv 'INPUT_TAG' || echo 'latest')",
-  "domain": "$(printenv 'INPUT_DOMAIN' || echo '')",
+  "domain": "$DOMAIN",
   "route_type": "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')",
   "route": "$(printenv 'INPUT_ROUTE' || echo '')",
   "port": "$(printenv 'INPUT_PORT' || echo '3000')",
@@ -177,22 +190,18 @@ WORKING_DIR="$(printenv 'INPUT_WORKING-DIR' || echo '/opt/uds')"
 COMMAND="$(printenv 'INPUT_COMMAND' || echo 'deploy')"
 
 # Enhanced installation with error handling and progress tracking
-SETUP_CMD="set -e; mkdir -p $WORKING_DIR/configs"
+SETUP_CMD="set -e; mkdir -p $WORKING_DIR/configs $WORKING_DIR/scripts $WORKING_DIR/plugins"
 SETUP_CMD+=" && if [ ! -f $WORKING_DIR/uds-deploy.sh ]; then"
 SETUP_CMD+=" echo 'Installing UDS scripts...';"
 
-# Download with fallback URLs and better error handling
+# Download with better error handling
 SETUP_CMD+=" download_url='https://github.com/elijahmont3x/unified-deploy-action/archive/refs/heads/master.tar.gz';"
-SETUP_CMD+=" fallback_url='https://github.com/elijahmont3x/unified-deploy-action/archive/refs/heads/main.tar.gz';"
-SETUP_CMD+=" echo 'Downloading UDS scripts from primary URL...';"
+SETUP_CMD+=" echo 'Downloading UDS scripts...';"
 SETUP_CMD+=" if ! curl -s -L \$download_url -o /tmp/uds.tar.gz; then"
-SETUP_CMD+="   echo 'Primary URL failed, trying fallback URL...';"
-SETUP_CMD+="   if ! curl -s -L \$fallback_url -o /tmp/uds.tar.gz; then"
-SETUP_CMD+="     echo 'Failed to download UDS scripts from both URLs'; exit 1;"
-SETUP_CMD+="   fi;"
+SETUP_CMD+="   echo 'Failed to download UDS scripts'; exit 1;"
 SETUP_CMD+=" fi;"
 
-SETUP_CMD+=" mkdir -p /tmp/uds-extract $WORKING_DIR/scripts $WORKING_DIR/plugins;"
+SETUP_CMD+=" mkdir -p /tmp/uds-extract;"
 SETUP_CMD+=" echo 'Extracting UDS scripts...';"
 SETUP_CMD+=" if ! tar xzf /tmp/uds.tar.gz -C /tmp/uds-extract; then"
 SETUP_CMD+="   echo 'Failed to extract UDS scripts'; rm -f /tmp/uds.tar.gz; exit 1;"
@@ -200,31 +209,27 @@ SETUP_CMD+=" fi;"
 
 # More robust path handling
 SETUP_CMD+=" echo 'Installing UDS files...';"
-SETUP_CMD+=" if [ -d /tmp/uds-extract/*/scripts ]; then"
-SETUP_CMD+="   cp -r /tmp/uds-extract/*/scripts/* $WORKING_DIR/scripts/ 2>/dev/null || true;"
-SETUP_CMD+="   cp -r /tmp/uds-extract/*/plugins/* $WORKING_DIR/plugins/ 2>/dev/null || true;"
-SETUP_CMD+=" elif [ -d /tmp/uds-extract/*/*/scripts ]; then"
-SETUP_CMD+="   cp -r /tmp/uds-extract/*/*/scripts/* $WORKING_DIR/scripts/ 2>/dev/null || true;"
-SETUP_CMD+="   cp -r /tmp/uds-extract/*/*/plugins/* $WORKING_DIR/plugins/ 2>/dev/null || true;"
-SETUP_CMD+=" else"
-SETUP_CMD+="   find /tmp/uds-extract -name 'scripts' -type d | while read dir; do cp -r \$dir/* $WORKING_DIR/scripts/ 2>/dev/null || true; done;"
-SETUP_CMD+="   find /tmp/uds-extract -name 'plugins' -type d | while read dir; do cp -r \$dir/* $WORKING_DIR/plugins/ 2>/dev/null || true; done;"
-SETUP_CMD+=" fi;"
+SETUP_CMD+=" find /tmp/uds-extract -name 'scripts' -type d | while read dir; do cp -r \$dir/* $WORKING_DIR/scripts/ 2>/dev/null || true; done;"
+SETUP_CMD+=" find /tmp/uds-extract -name 'plugins' -type d | while read dir; do cp -r \$dir/* $WORKING_DIR/plugins/ 2>/dev/null || true; done;"
 
-# Copy core files to main directory for backwards compatibility
-SETUP_CMD+=" cp $WORKING_DIR/scripts/*.sh $WORKING_DIR/ 2>/dev/null || true;"
-SETUP_CMD+=" chmod +x $WORKING_DIR/*.sh $WORKING_DIR/scripts/*.sh $WORKING_DIR/plugins/*.sh 2>/dev/null || true;"
+# Make scripts executable and clean up
+SETUP_CMD+=" chmod +x $WORKING_DIR/scripts/*.sh $WORKING_DIR/plugins/*.sh 2>/dev/null || true;"
 SETUP_CMD+=" rm -rf /tmp/uds-extract /tmp/uds.tar.gz;"
 SETUP_CMD+=" echo 'UDS installation completed successfully';"
 SETUP_CMD+=" fi;"
 
 # Create deploy command with better error handling
-DEPLOY_CMD="$SETUP_CMD && cat > $WORKING_DIR/configs/config.json && cd $WORKING_DIR && ./uds-$COMMAND.sh --config=configs/config.json"
+DEPLOY_CMD="$SETUP_CMD && mkdir -p $WORKING_DIR/logs && cat > $WORKING_DIR/configs/${APP_NAME}_config.json && cd $WORKING_DIR && ./uds-$COMMAND.sh --config=configs/${APP_NAME}_config.json"
 
+# Capture deployment output to extract deployment URL and status
+DEPLOY_OUTPUT_FILE=$(mktemp)
 log "Executing deployment via SSH..."
-if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE"; then
+if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE" > "$DEPLOY_OUTPUT_FILE" 2>&1; then
   log "ERROR: Deployment failed on remote server"
   log "Checking for detailed error logs..."
+  
+  # Display output content
+  cat "$DEPLOY_OUTPUT_FILE" || true
   
   # Get more comprehensive error information
   $SSH_COMMAND -o ConnectTimeout=10 "$USERNAME@$HOST" "cat $WORKING_DIR/logs/uds.log 2>/dev/null | tail -n 100" || true
@@ -235,7 +240,43 @@ if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFI
   # Get Docker container status if applicable
   $SSH_COMMAND -o ConnectTimeout=10 "$USERNAME@$HOST" "if command -v docker > /dev/null; then echo 'Docker container status:'; docker ps -a | grep '$APP_NAME' || echo 'No containers found'; fi" || true
   
+  # Set outputs for GitHub Actions
+  set_output "status" "failure"
+  set_output "deployment_url" ""
+  set_output "version" "$INPUT_TAG"
+  
   error_exit "Deployment failed on remote server"
 fi
 
+# Process output to extract URL and version
+DEPLOYMENT_URL=""
+if grep -q "Application is available at:" "$DEPLOY_OUTPUT_FILE"; then
+  DEPLOYMENT_URL=$(grep "Application is available at:" "$DEPLOY_OUTPUT_FILE" | sed 's/.*Application is available at: \(.*\)/\1/')
+elif grep -q "https://${DOMAIN}" "$DEPLOY_OUTPUT_FILE"; then
+  DEPLOYMENT_URL=$(grep -o "https://${DOMAIN}[^ ]*" "$DEPLOY_OUTPUT_FILE" | head -1)
+elif grep -q "http://${DOMAIN}" "$DEPLOY_OUTPUT_FILE"; then
+  DEPLOYMENT_URL=$(grep -o "http://${DOMAIN}[^ ]*" "$DEPLOY_OUTPUT_FILE" | head -1)
+else
+  # Construct URL based on inputs if not found in output
+  if [ "$(printenv 'INPUT_SSL' || echo 'true')" = "true" ]; then
+    URL_SCHEME="https"
+  else
+    URL_SCHEME="http"
+  fi
+  
+  if [ "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')" = "subdomain" ] && [ -n "$(printenv 'INPUT_ROUTE' || echo '')" ]; then
+    DEPLOYMENT_URL="${URL_SCHEME}://$(printenv 'INPUT_ROUTE').${DOMAIN}"
+  elif [ "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')" = "path" ] && [ -n "$(printenv 'INPUT_ROUTE' || echo '')" ]; then
+    DEPLOYMENT_URL="${URL_SCHEME}://${DOMAIN}/$(printenv 'INPUT_ROUTE')"
+  else
+    DEPLOYMENT_URL="${URL_SCHEME}://${DOMAIN}"
+  fi
+fi
+
+# Set outputs for GitHub Actions
+set_output "status" "success"
+set_output "deployment_url" "$DEPLOYMENT_URL"
+set_output "version" "$(printenv 'INPUT_TAG' || echo 'latest')"
+
+rm -f "$DEPLOY_OUTPUT_FILE"
 log "UDS Docker Action completed successfully"

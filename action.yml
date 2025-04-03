@@ -1,5 +1,6 @@
 name: 'Unified Deployment System'
 description: 'A comprehensive deployment system with SSL, dynamic routing, and plugin support'
+author: 'UDS Team'
 branding:
   icon: 'cloud'
   color: 'blue'
@@ -48,7 +49,7 @@ inputs:
     description: 'DNS provider for SSL DNS challenge'
     required: false
   ssl-dns-credentials:
-    description: 'Credentials for DNS provider'
+    description: 'Credentials for DNS provider (JSON string)'
     required: false
   volumes:
     description: 'Volume mappings (comma-separated list of source:target)'
@@ -130,6 +131,7 @@ inputs:
   telegram-bot-token:
     description: 'Telegram bot token'
     required: false
+    sensitive: true
   telegram-chat-id:
     description: 'Telegram chat ID'
     required: false
@@ -144,6 +146,7 @@ inputs:
   max-log-lines:
     description: 'Maximum number of log lines to collect on error'
     required: false
+    default: '50'
   working-dir:
     description: 'Working directory on the remote server'
     required: false
@@ -157,9 +160,14 @@ inputs:
   ssh-key:
     description: 'SSH private key'
     required: true
+    sensitive: true
   plugins:
     description: 'Comma-separated list of plugins to enable'
     required: false
+  auto-rollback:
+    description: 'Enable automatic rollback on deployment failure'
+    required: false
+    default: 'true'
 
 runs:
   using: 'docker'
@@ -172,3 +180,5 @@ outputs:
     description: 'Deployed version tag'
   status:
     description: 'Deployment status (success/failure)'
+  logs:
+    description: 'Deployment log summary'

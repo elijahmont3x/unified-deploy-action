@@ -22,37 +22,50 @@ uds_detect_health_check_type() {
     return 0
   fi
   
+  # Get lowercase image name for more accurate detection
+  local image_lower=$(echo "$image" | tr '[:upper:]' '[:lower:]')
+  
   # Enhanced container type detection for better health check selection
-  if [[ "$image" == *"redis"* ]]; then
+  if [[ "$image_lower" == *"redis"* ]]; then
     echo "tcp"
     return 0
-  elif [[ "$image" == *"postgres"* ]] || [[ "$image" == *"mysql"* ]] || [[ "$image" == *"mariadb"* ]]; then
+  elif [[ "$image_lower" == *"postgres"* ]] || [[ "$image_lower" == *"mysql"* ]] || [[ "$image_lower" == *"mariadb"* ]]; then
     echo "database"
     return 0
-  elif [[ "$image" == *"mongo"* ]]; then
+  elif [[ "$image_lower" == *"mongo"* ]]; then
     echo "database"
     return 0
-  elif [[ "$image" == *"rabbitmq"* ]]; then
+  elif [[ "$image_lower" == *"rabbitmq"* ]]; then
     echo "rabbitmq"
     return 0
-  elif [[ "$image" == *"kafka"* ]]; then
+  elif [[ "$image_lower" == *"kafka"* ]]; then
     echo "kafka"
     return 0
-  elif [[ "$image" == *"elasticsearch"* ]]; then
+  elif [[ "$image_lower" == *"elastic"* ]] || [[ "$image_lower" == *"elasticsearch"* ]]; then
     echo "elasticsearch"
     return 0
-  elif [[ "$image" == *"nginx"* ]] || [[ "$image" == *"httpd"* ]] || [[ "$image" == *"caddy"* ]]; then
+  elif [[ "$image_lower" == *"nginx"* ]] || [[ "$image_lower" == *"httpd"* ]] || [[ "$image_lower" == *"caddy"* ]]; then
     echo "http"
     return 0
   else
     # Default to http for most applications, but try to detect from container
     local container_name="${app_name}-app"
-    if docker inspect --format='{{.State.Health}}' "$container_name" &>/dev/null; then
+    
+    # First check if container exists
+    if ! docker ps -q --filter "name=$container_name" | grep -q .; then
+      # Container doesn't exist or not running yet, default to http
+      echo "http"
+      return 0
+    fi
+    
+    # Then check if container has health check defined
+    if docker inspect --format='{{if .Config.Healthcheck}}{{.Config.Healthcheck}}{{else}}{{end}}' "$container_name" 2>/dev/null | grep -q "CMD"; then
       # Container has health check defined
       echo "container"
       return 0
     fi
     
+    # Default to http for unknown services
     echo "http"
     return 0
   fi
@@ -283,23 +296,125 @@ uds_health_check_with_retry() {
   
   # Auto-detect health check type if needed
   if [ "$health_type" = "auto" ]; then
-    health_type=$(uds_detect_health_check_type "$app_name" "$IMAGE" "$health_endpoint")
+    if type uds_detect_health_check_type &>/dev/null; then
+      health_type=$(uds_detect_health_check_type "$app_name" "$IMAGE" "$health_endpoint")
+      uds_log "Auto-detected health check type: $health_type" "debug"
+    else
+      # Default to HTTP if detection function is not available
+      health_type="http"
+      uds_log "Health check type detection not available, defaulting to HTTP" "warning"
+    fi
   fi
   
-  # Implement exponential backoff
+  # Skip if health check is explicitly disabled
+  if [ "$health_type" = "none" ] || [ "$health_endpoint" = "none" ] || [ "$health_endpoint" = "disabled" ]; then
+    uds_log "Health check disabled for $app_name" "info"
+    return 0
+  fi
+  
+  # Implement exponential backoff with jitter
   local attempt=1
-  local wait_time=$((timeout / max_attempts))
+  local base_wait=$((timeout / max_attempts))
+  local wait_time=$base_wait
+  local max_wait=30  # Maximum wait time in seconds
   
   while [ $attempt -le $max_attempts ]; do
     uds_log "Health check attempt $attempt of $max_attempts (type: $health_type)" "info"
     
-    if uds_check_health "$app_name" "$port" "$health_endpoint" "$wait_time" "$health_type" "$container_name" "$health_command"; then
+    # Check if the container exists before checking health
+    if [ "$health_type" != "command" ] && ! docker ps -q --filter "name=$container_name" | grep -q .; then
+      # Wait a bit for container to start if it's still early in attempts
+      if [ $attempt -le 2 ]; then
+        uds_log "Container $container_name not running yet, waiting before retry" "warning"
+        sleep $wait_time
+        attempt=$((attempt + 1))
+        # Add jitter to avoid thundering herd problems
+        wait_time=$(( (base_wait * 2**attempt) + (RANDOM % 5) ))
+        # Cap at maximum wait time
+        if [ $wait_time -gt $max_wait ]; then
+          wait_time=$max_wait
+        fi
+        continue
+      else
+        uds_log "Container $container_name not running after multiple attempts" "error"
+        return 1
+      fi
+    fi
+    
+    # Perform health check based on type
+    local health_result=1
+    
+    case "$health_type" in
+      http)
+        local http_result=$(curl -s -o /dev/null -w "%{http_code}" -m 5 "http://localhost:${port}${health_endpoint}" 2>/dev/null)
+        if [ "$http_result" -ge 200 ] && [ "$http_result" -lt 300 ]; then
+          health_result=0
+        fi
+        ;;
+      
+      tcp)
+        # Check if port is open
+        if ! uds_is_port_available "$port" "localhost"; then
+          health_result=0
+        fi
+        ;;
+      
+      database)
+        # Try to determine database type from image or container
+        local db_type=""
+        if docker exec "$container_name" pg_isready 2>/dev/null; then
+          health_result=0
+        elif docker exec "$container_name" mysqladmin ping --silent 2>/dev/null; then
+          health_result=0
+        elif docker exec "$container_name" mongo --eval "db.adminCommand('ping')" 2>/dev/null | grep -q "ok"; then
+          health_result=0
+        fi
+        ;;
+      
+      container)
+        # Check container health status
+        local health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null)
+        if [ "$health_status" = "healthy" ]; then
+          health_result=0
+        elif [ "$health_status" = "none" ] && docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
+          # If no health check defined but container is running, consider it healthy
+          health_result=0
+        fi
+        ;;
+      
+      command)
+        # Execute custom health check command
+        if [ -n "$health_command" ]; then
+          if eval "$health_command"; then
+            health_result=0
+          fi
+        fi
+        ;;
+      
+      *)
+        # Fallback to HTTP check
+        local http_result=$(curl -s -o /dev/null -w "%{http_code}" -m 5 "http://localhost:${port}${health_endpoint}" 2>/dev/null)
+        if [ "$http_result" -ge 200 ] && [ "$http_result" -lt 300 ]; then
+          health_result=0
+        fi
+        ;;
+    esac
+    
+    # If health check passed, we're done
+    if [ $health_result -eq 0 ]; then
       uds_log "Health check passed on attempt $attempt" "success"
       return 0
     fi
     
+    # Update attempt counter and wait time for next attempt
     attempt=$((attempt + 1))
-    wait_time=$((wait_time * 2)) # Exponential backoff
+    
+    # Exponential backoff with jitter for retry
+    wait_time=$(( (base_wait * 2**attempt) + (RANDOM % 5) ))
+    # Cap at maximum wait time
+    if [ $wait_time -gt $max_wait ]; then
+      wait_time=$max_wait
+    fi
     
     if [ $attempt -le $max_attempts ]; then
       uds_log "Health check failed, waiting ${wait_time}s before retry" "warning"
@@ -307,7 +422,28 @@ uds_health_check_with_retry() {
     fi
   done
   
+  # Collect diagnostics on failure
   uds_log "Health check failed after $max_attempts attempts" "error"
+  
+  # Check if container exists and collect logs
+  if docker ps -a -q --filter "name=$container_name" | grep -q .; then
+    uds_log "Container logs for $container_name (last ${MAX_LOG_LINES:-20} lines):" "info"
+    docker logs --tail="${MAX_LOG_LINES:-20}" "$container_name" 2>&1 || true
+    
+    # Check container status
+    local container_status=$(docker inspect --format='{{.State.Status}}' "$container_name" 2>/dev/null)
+    uds_log "Container status: $container_status" "info"
+    
+    # If container exited, get exit code
+    if [ "$container_status" = "exited" ]; then
+      local exit_code=$(docker inspect --format='{{.State.ExitCode}}' "$container_name" 2>/dev/null)
+      uds_log "Container exit code: $exit_code" "info"
+    fi
+  fi
+  
+  # Execute any registered health-check-failed hooks
+  uds_execute_hook "health_check_failed" "$app_name" "$APP_DIR"
+  
   return 1
 }
 

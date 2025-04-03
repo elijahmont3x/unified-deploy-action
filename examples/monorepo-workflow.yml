@@ -2,9 +2,9 @@ name: Monorepo Deploy with UDS
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   detect-changes:

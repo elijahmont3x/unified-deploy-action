@@ -33,6 +33,7 @@ plugin_activate_ssl_manager() {
   
   # Make sure the certs directory exists
   mkdir -p "${UDS_CERTS_DIR}"
+  uds_secure_permissions "${UDS_CERTS_DIR}" 700
 }
 
 # Check SSL certificates before deployment
@@ -42,6 +43,11 @@ plugin_ssl_check() {
   if [ "$SSL" != "true" ]; then
     return 0
   fi
+  
+  if [ -z "$DOMAIN" ]; then
+    uds_log "No domain specified, cannot set up SSL" "error"
+    return 1
+  }
   
   local server_name="$DOMAIN"
   # Check for wildcard domain request
@@ -116,7 +122,9 @@ plugin_ssl_setup() {
       if [ -n "${SSL_DNS_CREDENTIALS}" ]; then
         # Create a secure credentials file
         local creds_file="/tmp/dns_credentials.ini"
-        echo "${SSL_DNS_CREDENTIALS}" > "$creds_file"
+        # Sanitize credentials before writing to file
+        local sanitized_creds=$(echo "${SSL_DNS_CREDENTIALS}" | sed 's/\\\\/\\/g' | sed 's/\\"/"/g')
+        echo "${sanitized_creds}" > "$creds_file"
         uds_secure_permissions "$creds_file" 600
         
         certbot_cmd="${certbot_cmd} --dns-${SSL_DNS_PROVIDER}-credentials $creds_file"
@@ -138,50 +146,72 @@ plugin_ssl_setup() {
     # Add RSA key size
     certbot_cmd="${certbot_cmd} --rsa-key-size ${SSL_RSA_KEY_SIZE}"
     
-    # For non-wildcard certs, need to stop web servers
+    # For non-wildcard certs, need to stop web servers temporarily
     if [ "$is_wildcard" = false ]; then
       # Stop Nginx temporarily
+      local nginx_was_running=false
       if docker ps -q --filter "name=nginx-proxy" | grep -q .; then
+        nginx_was_running=true
+        uds_log "Stopping Nginx temporarily for certificate validation" "info"
         docker stop nginx-proxy || true
-      elif command -v nginx &> /dev/null; then
-        service nginx stop || systemctl stop nginx || true
+      elif command -v nginx &> /dev/null && pgrep -x nginx > /dev/null; then
+        nginx_was_running=true
+        uds_log "Stopping Nginx service temporarily for certificate validation" "info"
+        systemctl stop nginx || service nginx stop || true
       fi
     fi
     
     # Run certbot
     uds_log "Running: $certbot_cmd" "debug"
-    if ! eval "$certbot_cmd"; then
-      uds_log "Failed to obtain Let's Encrypt certificate, falling back to self-signed" "warning"
-      plugin_ssl_generate_self_signed "$server_name" "$cert_dir"
-    else
-      # Copy certificates to our directory
-      cp -L /etc/letsencrypt/live/${server_name}/fullchain.pem "${cert_dir}/fullchain.pem"
-      cp -L /etc/letsencrypt/live/${server_name}/privkey.pem "${cert_dir}/privkey.pem"
+    local certbot_success=false
+    if eval "$certbot_cmd"; then
+      certbot_success=true
       
-      uds_log "Let's Encrypt certificate obtained successfully" "success"
+      # Get the path where Let's Encrypt saved the certificates
+      local le_cert_path="/etc/letsencrypt/live/${server_name}"
+      if [ ! -d "$le_cert_path" ]; then
+        # Try to find the certificate directory in case domain name normalization was applied
+        le_cert_path=$(find /etc/letsencrypt/live -name "*.pem" | grep -v README | head -n 1 | xargs dirname 2>/dev/null)
+      fi
       
-      # Clean up credentials file if it exists
-      if [ -f "/tmp/dns_credentials.ini" ]; then
-        uds_secure_delete "/tmp/dns_credentials.ini"
+      if [ -d "$le_cert_path" ]; then
+        # Copy certificates to our directory with proper permissions
+        cp -L "${le_cert_path}/fullchain.pem" "${cert_dir}/fullchain.pem"
+        cp -L "${le_cert_path}/privkey.pem" "${cert_dir}/privkey.pem"
+        chmod 644 "${cert_dir}/fullchain.pem"
+        chmod 600 "${cert_dir}/privkey.pem"
+        
+        uds_log "Let's Encrypt certificate obtained successfully" "success"
+      else
+        certbot_success=false
+        uds_log "Failed to locate Let's Encrypt certificates" "error"
       fi
     fi
     
+    # Clean up credentials file if it exists
+    if [ -f "/tmp/dns_credentials.ini" ]; then
+      uds_secure_delete "/tmp/dns_credentials.ini"
+    fi
+    
     # Restart Nginx if we stopped it
-    if [ "$is_wildcard" = false ]; then
+    if [ "$is_wildcard" = false ] && [ "$nginx_was_running" = true ]; then
+      uds_log "Restarting Nginx" "info"
       if docker ps -a --filter "name=nginx-proxy" | grep -q .; then
         docker start nginx-proxy || true
       elif command -v nginx &> /dev/null; then
-        service nginx start || systemctl start nginx || true
+        systemctl start nginx || service nginx start || true
       fi
+    fi
+    
+    # If Let's Encrypt failed, fall back to self-signed
+    if [ "$certbot_success" = false ]; then
+      uds_log "Failed to obtain Let's Encrypt certificate, falling back to self-signed" "warning"
+      plugin_ssl_generate_self_signed "$server_name" "$cert_dir"
     fi
   else
     # Generate self-signed certificate
     plugin_ssl_generate_self_signed "$server_name" "$cert_dir"
   fi
-  
-  # Set proper permissions
-  chmod 644 "${cert_dir}/fullchain.pem"
-  chmod 600 "${cert_dir}/privkey.pem"
   
   return 0
 }
@@ -196,18 +226,46 @@ plugin_ssl_generate_self_signed() {
   # Create directory if it doesn't exist
   mkdir -p "$cert_dir"
   
+  # Determine if it's a wildcard certificate
+  local subject_alt_name="DNS:${server_name}"
+  if [[ "$server_name" == \** ]]; then
+    # Add both wildcard and base domain as SANs
+    local base_domain="${server_name#\*.}"
+    subject_alt_name="DNS:${server_name},DNS:${base_domain}"
+  fi
+  
+  # Create a temporary OpenSSL config for SAN support
+  local ssl_config=$(mktemp)
+  cat > "$ssl_config" << EOL
+[ req ]
+default_bits       = ${SSL_RSA_KEY_SIZE}
+default_md         = sha256
+prompt             = no
+encrypt_key        = no
+distinguished_name = req_dn
+req_extensions     = req_ext
+
+[ req_dn ]
+CN = ${server_name}
+
+[ req_ext ]
+subjectAltName = ${subject_alt_name}
+EOL
+  
   # Generate self-signed certificate
-  openssl req -x509 -nodes -days 365 -newkey rsa:${SSL_RSA_KEY_SIZE} \
+  if openssl req -x509 -nodes -days 365 -newkey rsa:${SSL_RSA_KEY_SIZE} \
     -keyout "${cert_dir}/privkey.pem" \
     -out "${cert_dir}/fullchain.pem" \
-    -subj "/CN=${server_name}" \
-    -addext "subjectAltName=DNS:${server_name}"
-  
-  if [ $? -eq 0 ]; then
+    -config "$ssl_config"; then
+    
     uds_log "Self-signed certificate generated successfully" "success"
+    chmod 644 "${cert_dir}/fullchain.pem"
+    chmod 600 "${cert_dir}/privkey.pem"
+    rm -f "$ssl_config"
     return 0
   else
     uds_log "Failed to generate self-signed certificate" "error"
+    rm -f "$ssl_config"
     return 1
   fi
 }
@@ -220,42 +278,56 @@ plugin_ssl_setup_auto_renewal() {
   
   uds_log "Setting up automatic certificate renewal" "info"
   
-  # Check if crontab entry already exists
-  if crontab -l 2>/dev/null | grep -q "certbot renew"; then
-    uds_log "Automatic renewal already configured" "info"
-    return 0
-  fi
+  # Ensure log directory exists
+  mkdir -p "/var/log" 2>/dev/null || true
   
-  # Create renewal script
+  # Create renewal script with improved error handling
   local renewal_script="${UDS_BASE_DIR}/renew-certs.sh"
   
   cat > "$renewal_script" << 'EOL'
 #!/bin/bash
 # Renew certificates and reload Nginx
-certbot renew --quiet
 
-# Check if renewal was successful
-if [ $? -eq 0 ]; then
+# Log function
+log() {
+  echo "$(date) - $1" >> /var/log/certbot-renew.log
+}
+
+log "Starting certificate renewal process"
+
+# Run certbot with proper error handling
+if ! certbot renew --quiet; then
+  log "Certificate renewal failed with exit code $?"
+else
+  log "Certificates renewed successfully"
+  
   # Reload Nginx
   if docker ps -q --filter "name=nginx-proxy" | grep -q .; then
-    docker exec nginx-proxy nginx -s reload
+    log "Reloading Nginx in Docker container"
+    if ! docker exec nginx-proxy nginx -s reload; then
+      log "Failed to reload Nginx in container"
+    fi
   elif command -v nginx &> /dev/null; then
-    nginx -s reload
+    log "Reloading Nginx service"
+    if ! (nginx -s reload || systemctl reload nginx || service nginx reload); then
+      log "Failed to reload Nginx service"
+    fi
+  else
+    log "Nginx not found, skipping reload"
   fi
-  
-  echo "$(date) - Certificates renewed successfully" >> /var/log/certbot-renew.log
-else
-  echo "$(date) - Certificate renewal failed" >> /var/log/certbot-renew.log
 fi
 EOL
   
   chmod +x "$renewal_script"
   
   # Add crontab entry to run twice daily (standard for Let's Encrypt)
-  (crontab -l 2>/dev/null || echo "") | grep -v "$renewal_script" > /tmp/crontab.tmp
-  echo "0 0,12 * * * $renewal_script > /dev/null 2>&1" >> /tmp/crontab.tmp
-  crontab /tmp/crontab.tmp
-  rm /tmp/crontab.tmp
+  # Only add if not already present
+  if ! crontab -l 2>/dev/null | grep -q "$renewal_script"; then
+    (crontab -l 2>/dev/null || echo "") > /tmp/crontab.tmp
+    echo "0 0,12 * * * $renewal_script > /dev/null 2>&1" >> /tmp/crontab.tmp
+    crontab /tmp/crontab.tmp
+    rm /tmp/crontab.tmp
+  fi
   
   uds_log "Automatic certificate renewal configured" "success"
   return 0

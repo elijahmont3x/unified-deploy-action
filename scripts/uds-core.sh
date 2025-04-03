@@ -252,36 +252,49 @@ uds_discover_plugins() {
   
   if [ ! -d "$plugin_dir" ]; then
     uds_log "Plugin directory not found: $plugin_dir" "warning"
+    mkdir -p "$plugin_dir"
     return 0
   fi
   
   # Clear existing plugin registry
-  UDS_PLUGIN_REGISTRY=()
+  declare -A UDS_PLUGIN_REGISTRY=()
   
   # Find and source plugin files
   for plugin_file in "$plugin_dir"/*.sh; do
-    if [ -f "$plugin_file" ]; then
-      uds_log "Loading plugin: $(basename "$plugin_file")" "debug"
-      
-      # Source the plugin file
-      source "$plugin_file"
-      
-      # Extract plugin name from filename
-      local plugin_name=$(basename "$plugin_file" .sh)
-      local register_func="plugin_register_${plugin_name//-/_}"
-      
-      # Check if registration function exists and call it
-      if declare -f "$register_func" > /dev/null; then
-        uds_log "Registering plugin: $plugin_name" "debug"
-        "$register_func"
-        UDS_PLUGIN_REGISTRY["$plugin_name"]=1
-      else
-        uds_log "Plugin registration function not found: $register_func" "warning"
+    # Skip if no plugins match the pattern (handle empty directories)
+    if [ ! -f "$plugin_file" ]; then
+      continue
+    fi
+    
+    uds_log "Loading plugin: $(basename "$plugin_file")" "debug"
+    
+    # Source the plugin file with error handling
+    if ! source "$plugin_file"; then
+      uds_log "Error sourcing plugin: $(basename "$plugin_file")" "error"
+      continue
+    fi
+    
+    # Extract plugin name from filename
+    local plugin_name=$(basename "$plugin_file" .sh)
+    local register_func="plugin_register_${plugin_name//-/_}"
+    
+    # Check if registration function exists and call it
+    if declare -f "$register_func" > /dev/null; then
+      uds_log "Registering plugin: $plugin_name" "debug"
+      if ! "$register_func"; then
+        uds_log "Failed to register plugin: $plugin_name" "error"
+        continue
       fi
+      UDS_PLUGIN_REGISTRY["$plugin_name"]=1
+    else
+      uds_log "Plugin registration function not found: $register_func" "warning"
     fi
   done
   
   uds_log "Registered ${#UDS_PLUGIN_REGISTRY[@]} plugins" "debug"
+  
+  # Export the updated registry to make it available globally
+  export UDS_PLUGIN_REGISTRY
 }
 
 # Activate specific plugins
@@ -615,13 +628,14 @@ EOL
     IFS=',' read -ra PORTS <<< "$port"
     
     for i in "${!IMAGES[@]}"; do
-      local service_name=$(echo "${IMAGES[$i]}" | sed 's/.*\///' | sed 's/:.*//')
+      local img_clean=$(echo "${IMAGES[$i]}" | tr -d ' ')
+      local service_name=$(echo "$img_clean" | sed 's/.*\///' | sed 's/:.*//' | tr '[:upper:]' '[:lower:]')
       local service_port=${PORTS[$i]:-3000}
       
       # Add the service configuration
       cat >> "$output_file" << EOL
   ${service_name}:
-    image: ${IMAGES[$i]}:${tag}
+    image: ${img_clean}:${tag}
     container_name: ${app_name}-${service_name}
 EOL
       if [ "$use_profiles" = "true" ]; then
@@ -648,7 +662,12 @@ EOL
       # Add environment variables
       if [ "$env_vars" != "{}" ]; then
         echo "    environment:" >> "$output_file"
-        echo "$env_vars" | jq -r 'to_entries[] | "      - " + .key + "=" + .value' >> "$output_file"
+        # Parse env_vars JSON safely to handle different formats
+        if echo "$env_vars" | jq -e 'type == "object"' > /dev/null 2>&1; then
+          echo "$env_vars" | jq -r 'to_entries[] | "      - " + .key + "=" + (.value | tostring)' >> "$output_file"
+        else
+          uds_log "Warning: env_vars is not a valid JSON object, using empty environment" "warning"
+        fi
       fi
       
       # Add volumes
@@ -656,7 +675,8 @@ EOL
         echo "    volumes:" >> "$output_file"
         IFS=',' read -ra VOLUME_MAPPINGS <<< "$volumes"
         for volume in "${VOLUME_MAPPINGS[@]}"; do
-          echo "      - $volume" >> "$output_file"
+          local vol_clean=$(echo "$volume" | tr -d ' ')
+          echo "      - $vol_clean" >> "$output_file"
         done
       fi
       
@@ -665,7 +685,8 @@ EOL
         echo "    extra_hosts:" >> "$output_file"
         IFS=',' read -ra HOST_ENTRIES <<< "$extra_hosts"
         for host in "${HOST_ENTRIES[@]}"; do
-          echo "      - $host" >> "$output_file"
+          local host_clean=$(echo "$host" | tr -d ' ')
+          echo "      - $host_clean" >> "$output_file"
         done
       fi
       
@@ -704,7 +725,12 @@ EOL
     # Add environment variables
     if [ "$env_vars" != "{}" ]; then
       echo "    environment:" >> "$output_file"
-      echo "$env_vars" | jq -r 'to_entries[] | "      - " + .key + "=" + .value' >> "$output_file"
+      # Parse env_vars JSON safely to handle different formats
+      if echo "$env_vars" | jq -e 'type == "object"' > /dev/null 2>&1; then
+        echo "$env_vars" | jq -r 'to_entries[] | "      - " + .key + "=" + (.value | tostring)' >> "$output_file"
+      else
+        uds_log "Warning: env_vars is not a valid JSON object, using empty environment" "warning"
+      fi
     fi
     
     # Add volumes
@@ -712,7 +738,8 @@ EOL
       echo "    volumes:" >> "$output_file"
       IFS=',' read -ra VOLUME_MAPPINGS <<< "$volumes"
       for volume in "${VOLUME_MAPPINGS[@]}"; do
-        echo "      - $volume" >> "$output_file"
+        local vol_clean=$(echo "$volume" | tr -d ' ')
+        echo "      - $vol_clean" >> "$output_file"
       done
     fi
     
@@ -721,7 +748,8 @@ EOL
       echo "    extra_hosts:" >> "$output_file"
       IFS=',' read -ra HOST_ENTRIES <<< "$extra_hosts"
       for host in "${HOST_ENTRIES[@]}"; do
-        echo "      - $host" >> "$output_file"
+        local host_clean=$(echo "$host" | tr -d ' ')
+        echo "      - $host_clean" >> "$output_file"
       done
     fi
     
@@ -1046,16 +1074,26 @@ uds_sanitize_env_vars() {
     "PRIVATE_KEY[A-Za-z0-9_-]*"
     "AUTH[A-Za-z0-9_-]*_TOKEN"
     "TOKEN[A-Za-z0-9_-]*"
+    "SSH_KEY"
+    "SSL_DNS_CREDENTIALS"
+    "CONNECTION_STRING"
+    "CONN_STR"
   )
   
   # Apply sanitization to each pattern
   for pattern in "${patterns[@]}"; do
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=([^[:space:]]+)/\1=******/g")
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *([^[:space:]]+)/\1: ******/g")
+    # Cover both key=value and key: value formats
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=([^[:space:]\"']+)/\1=******/g")
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=('[^']+')/\1=******/g")
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=(\"[^\"]+\")/\1=******/g")
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *([^[:space:],}\"])/\1: ******/g")
   done
   
   # Enhanced JSON pattern sanitization - covers more keys and formats
-  sanitized=$(echo "$sanitized" | sed -E 's/"(password|passwd|pass|secret|token|apitoken|key|apikey|api_key|access_token|auth|credentials|cert|private_key|ssh_key|encryption_key)"\s*:\s*"[^"]*"/"\\1": "******"/g')
+  sanitized=$(echo "$sanitized" | sed -E 's/"(password|passwd|pass|secret|token|apitoken|key|apikey|api_key|access_token|auth|credentials|cert|private_key|ssh_key|encryption_key|connection[_-]string)"\s*:\s*"[^"]*"/"\\1": "******"/g')
+  
+  # Handle database connection strings (more complex pattern)
+  sanitized=$(echo "$sanitized" | sed -E 's/(postgresql:\/\/|mysql:\/\/|mongodb:\/\/)[^:]+:[^@]+@/\1username:******@/g')
   
   echo "$sanitized"
 }

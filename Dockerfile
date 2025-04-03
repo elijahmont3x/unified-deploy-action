@@ -9,20 +9,22 @@ RUN apk add --no-cache \
     jq \
     openssh-client \
     openssl \
-    rsync
+    rsync \
+    ca-certificates
 
 # Create non-root user for better security
 RUN addgroup -S uds && adduser -S uds -G uds
+
+# Create UDS directory structure
+RUN mkdir -p /opt/uds/scripts /opt/uds/plugins /opt/uds/configs /opt/uds/logs /opt/uds/certs /opt/uds/www
 
 # Copy UDS files into the image
 COPY scripts/ /opt/uds/scripts/
 COPY plugins/ /opt/uds/plugins/
 
 # Make scripts executable
-RUN chmod +x /opt/uds/scripts/*.sh
-
-# Create directories for configs and logs
-RUN mkdir -p /opt/uds/configs /opt/uds/logs /opt/uds/certs && \
+RUN find /opt/uds/scripts -name "*.sh" -exec chmod +x {} \; && \
+    find /opt/uds/plugins -name "*.sh" -exec chmod +x {} \; && \
     chown -R uds:uds /opt/uds
 
 # Create entrypoint script

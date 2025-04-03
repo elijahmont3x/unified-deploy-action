@@ -28,6 +28,7 @@ ADDITIONAL OPTIONS:
   --dry-run                Show what would be done without actually doing it
   --multi-stage            Use multi-stage deployment with validation
   --check-dependencies     Check if all required dependencies are satisfied
+  --auto-rollback          Enable automatic rollback on failure
   --help                   Show this help message
 
 EXAMPLES:
@@ -45,6 +46,13 @@ EOL
 
 # Parse command-line arguments
 uds_parse_args() {
+  # Initialize variables with defaults
+  DRY_RUN=false
+  MULTI_STAGE=false
+  CHECK_DEPENDENCIES=false
+  AUTO_ROLLBACK=true
+  CONFIG_FILE=""
+  
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config=*)
@@ -67,6 +75,14 @@ uds_parse_args() {
         CHECK_DEPENDENCIES=true
         shift
         ;;
+      --auto-rollback)
+        AUTO_ROLLBACK=true
+        shift
+        ;;
+      --no-rollback)
+        AUTO_ROLLBACK=false
+        shift
+        ;;
       --help)
         uds_show_help
         exit 0
@@ -80,11 +96,20 @@ uds_parse_args() {
   done
 
   # Validate required parameters
-  if [ -z "${CONFIG_FILE:-}" ]; then
+  if [ -z "${CONFIG_FILE}" ]; then
     uds_log "Missing required parameter: --config" "error"
     uds_show_help
     exit 1
   fi
+  
+  # Validate config file exists
+  if [ ! -f "${CONFIG_FILE}" ]; then
+    uds_log "Configuration file not found: ${CONFIG_FILE}" "error"
+    exit 1
+  }
+  
+  # Export variables for use in other functions
+  export DRY_RUN MULTI_STAGE CHECK_DEPENDENCIES AUTO_ROLLBACK
 }
 
 # Enhanced check_deploy_dependencies with improved error handling
@@ -110,13 +135,41 @@ uds_check_deploy_dependencies() {
     return 1
   fi
   
-  # Check if image exists or can be pulled
-  uds_log "Checking if image $image:$tag is available" "debug"
-  
-  if ! docker image inspect "$image:$tag" &>/dev/null; then
-    uds_log "Image $image:$tag not found locally, attempting to pull" "info"
-    if ! docker pull "$image:$tag"; then
-      uds_log "Failed to pull image $image:$tag" "error"
+  # Skip Docker image check if doing a dry run
+  if [ "${DRY_RUN}" != "true" ]; then
+    # Check if images exist or can be pulled
+    local failed_images=()
+    
+    # Handle multiple images if specified
+    if [[ "$image" == *","* ]]; then
+      IFS=',' read -ra IMAGES <<< "$image"
+      
+      for img in "${IMAGES[@]}"; do
+        local img_clean=$(echo "$img" | tr -d ' ')
+        uds_log "Checking if image $img_clean:$tag is available" "debug"
+        
+        if ! docker image inspect "$img_clean:$tag" &>/dev/null; then
+          uds_log "Image $img_clean:$tag not found locally, attempting to pull" "info"
+          if ! docker pull "$img_clean:$tag"; then
+            failed_images+=("$img_clean:$tag")
+          fi
+        fi
+      done
+    else
+      # Single image
+      uds_log "Checking if image $image:$tag is available" "debug"
+      
+      if ! docker image inspect "$image:$tag" &>/dev/null; then
+        uds_log "Image $image:$tag not found locally, attempting to pull" "info"
+        if ! docker pull "$image:$tag"; then
+          failed_images+=("$image:$tag")
+        fi
+      fi
+    fi
+    
+    # Report failed images if any
+    if [ ${#failed_images[@]} -gt 0 ]; then
+      uds_log "Failed to pull the following images: ${failed_images[*]}" "error"
       return 1
     fi
   fi
@@ -125,25 +178,8 @@ uds_check_deploy_dependencies() {
   if [[ "$image" == *","* ]]; then
     uds_log "Checking multi-container network connectivity" "info"
     if ! docker network ls | grep -q "${app_name}-network"; then
-      uds_log "Creating network for $app_name" "info"
-      if ! docker network create "${app_name}-network"; then
-        uds_log "Failed to create network for $app_name" "error"
-        return 1
-      fi
-    fi
-    
-    # Check each image in the multi-container setup
-    IFS=',' read -ra IMAGES <<< "$image"
-    
-    for img in "${IMAGES[@]}"; do
-      if ! docker image inspect "$img:$tag" &>/dev/null; then
-        uds_log "Image $img:$tag not found locally, attempting to pull" "info"
-        if ! docker pull "$img:$tag"; then
-          uds_log "Failed to pull image $img:$tag" "error"
-          return 1
-        fi
-      fi
-    done
+      uds_log "Network for $app_name doesn't exist yet, will be created during deployment" "info"
+    }
   fi
   
   # Check if ports are available with better error reporting
@@ -151,7 +187,7 @@ uds_check_deploy_dependencies() {
   if [ -z "$resolved_port" ]; then
     uds_log "Failed to find available port for $app_name" "error"
     uds_log "Currently used ports:" "info"
-    netstat -tuln || ss -tuln || echo "Port checking utilities not available"
+    netstat -tuln 2>/dev/null || ss -tuln 2>/dev/null || echo "Port checking utilities not available"
     return 1
   elif [ "$resolved_port" != "$PORT" ]; then
     uds_log "Port $PORT is in use, using port $resolved_port instead" "warning"
@@ -184,6 +220,12 @@ uds_deploy_with_rollback() {
   else
     uds_log "Deployment failed, initiating rollback..." "error"
     
+    # Check if rollback is enabled
+    if [ "${AUTO_ROLLBACK}" != "true" ]; then
+      uds_log "Automatic rollback disabled, deployment remains in failed state" "warning"
+      return 1
+    }
+    
     # Check if we have rollback capability (version history)
     local service_data=$(uds_get_service "$APP_NAME")
     if [ -z "$service_data" ]; then
@@ -199,12 +241,50 @@ uds_deploy_with_rollback() {
     fi
     
     # Execute rollback
-    if source "$UDS_BASE_DIR/uds-rollback.sh" && uds_do_rollback --config="$CONFIG_FILE"; then
-      uds_log "Rollback successful" "warning"
-      return 0
+    uds_log "Rolling back to previous version" "warning"
+    
+    # Source rollback script if it exists
+    if [ -f "$UDS_BASE_DIR/uds-rollback.sh" ]; then
+      source "$UDS_BASE_DIR/uds-rollback.sh"
+      if uds_do_rollback --config="$CONFIG_FILE"; then
+        uds_log "Rollback successful" "warning"
+        return 0
+      else
+        uds_log "Rollback failed" "critical"
+        return 1
+      fi
     else
-      uds_log "Rollback failed" "critical"
-      return 1
+      # Implement inline rollback if rollback script is not available
+      uds_log "Rollback script not found, attempting direct rollback" "warning"
+      
+      # Get previous version info
+      local prev_version=$(echo "$version_history" | jq -r 'if length > 0 then .[length-1] else null end')
+      local prev_image=$(echo "$prev_version" | jq -r '.image')
+      local prev_tag=$(echo "$prev_version" | jq -r '.tag')
+      
+      # Set up rollback with previous version
+      IMAGE="$prev_image"
+      TAG="$prev_tag"
+      export IMAGE TAG
+      
+      # Execute pre-rollback hooks
+      uds_execute_hook "pre_rollback" "$APP_NAME" "$APP_DIR"
+      
+      # Redeploy with previous version
+      uds_log "Redeploying previous version: $prev_image:$prev_tag" "info"
+      
+      # Prepare and deploy
+      if uds_prepare_deployment && uds_deploy_application; then
+        uds_log "Rollback deployment successful" "success"
+        
+        # Execute post-rollback hooks
+        uds_execute_hook "post_rollback" "$APP_NAME" "$APP_DIR"
+        
+        return 0
+      else
+        uds_log "Rollback deployment failed" "critical"
+        return 1
+      fi
     fi
   fi
 }
@@ -219,7 +299,7 @@ uds_multi_stage_deployment() {
   uds_log "Stage 1: Validation" "info"
   
   # Check dependencies if flag is set
-  if [ "${CHECK_DEPENDENCIES:-false}" = "true" ] || [ "${MULTI_STAGE:-false}" = "true" ]; then
+  if [ "${CHECK_DEPENDENCIES}" = "true" ] || [ "${MULTI_STAGE}" = "true" ]; then
     if ! uds_check_deploy_dependencies "$APP_NAME" "$IMAGE" "$TAG"; then
       uds_log "Dependency validation failed" "error"
       return 1
@@ -238,7 +318,7 @@ uds_multi_stage_deployment() {
   
   # Create a staging directory for staged deployment
   local staging_dir="${APP_DIR}_staging"
-  rm -rf "$staging_dir" || true
+  rm -rf "$staging_dir" 2>/dev/null || true
   mkdir -p "$staging_dir"
   
   # Clone the app configuration
@@ -271,14 +351,14 @@ uds_multi_stage_deployment() {
   if [ -d "$original_dir" ]; then
     local backup_dir="${original_dir}_backup_$(date +%s)"
     uds_log "Creating backup at $backup_dir" "info"
-    mv "$original_dir" "$backup_dir" || {
+    if ! mv "$original_dir" "$backup_dir"; then
       uds_log "Failed to create backup, aborting cutover" "error"
       # Cleanup staging
       APP_DIR="$original_dir"
       export APP_DIR
       rm -rf "$staging_dir"
       return 1
-    }
+    fi
   fi
   
   # Stop existing deployment if it exists
@@ -286,7 +366,7 @@ uds_multi_stage_deployment() {
     uds_log "Stopping existing deployment" "info"
     
     # Stop with error handling
-    (docker ps -a -q --filter "name=${APP_NAME}-" | xargs docker stop) || {
+    docker ps -a -q --filter "name=${APP_NAME}-" | xargs docker stop 2>/dev/null || {
       uds_log "Warning: Some containers could not be stopped properly" "warning"
     }
   fi
@@ -298,19 +378,23 @@ uds_multi_stage_deployment() {
     # Attempt to restore from backup
     if [ -d "$backup_dir" ]; then
       uds_log "Restoring from backup" "warning"
-      rm -rf "$staging_dir" || true
-      mv "$backup_dir" "$original_dir" || {
+      rm -rf "$staging_dir" 2>/dev/null || true
+      if ! mv "$backup_dir" "$original_dir"; then
         uds_log "Failed to restore backup during rollback" "critical"
+        return 1
+      fi
+      
+      # Start the previous version
+      cd "$original_dir" || {
+        uds_log "Failed to change to app directory" "critical"
         return 1
       }
       
-      # Start the previous version
-      cd "$APP_DIR"
-      if [ -f "$APP_DIR/docker-compose.yml" ]; then
-        $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d || {
+      if [ -f "$original_dir/docker-compose.yml" ]; then
+        if ! $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d; then
           uds_log "Failed to start previous version" "critical"
           return 1
-        }
+        fi
       fi
       
       uds_log "Rollback completed successfully" "warning"
@@ -344,7 +428,7 @@ uds_multi_stage_deployment() {
       # Keep backup for a short time in case of issues
       if [ -d "$backup_dir" ]; then
         uds_log "Deployment successful. Backup will be removed automatically after 1 hour." "info"
-        (sleep 3600 && rm -rf "$backup_dir") &
+        (nohup bash -c "sleep 3600 && rm -rf '$backup_dir'" &>/dev/null &)
       fi
       
       uds_log "Multi-stage deployment completed successfully" "success"
@@ -352,25 +436,26 @@ uds_multi_stage_deployment() {
     else
       uds_log "Health check failed, rolling back" "error"
       
-      # Execute health-check-failed hooks
-      uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
-      
       # Rollback to previous version
       if [ -d "$backup_dir" ]; then
         uds_log "Rolling back to previous version" "warning"
-        rm -rf "$APP_DIR" || true
-        mv "$backup_dir" "$APP_DIR" || {
+        rm -rf "$APP_DIR" 2>/dev/null || true
+        if ! mv "$backup_dir" "$APP_DIR"; then
           uds_log "Failed to restore backup during rollback" "critical"
+          return 1
+        fi
+        
+        # Start the previous version
+        cd "$APP_DIR" || {
+          uds_log "Failed to change to app directory" "critical"
           return 1
         }
         
-        # Start the previous version
-        cd "$APP_DIR"
         if [ -f "$APP_DIR/docker-compose.yml" ]; then
-          $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d || {
+          if ! $UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d; then
             uds_log "Failed to start previous version" "critical"
             return 1
-          }
+          fi
         fi
         
         uds_log "Rollback completed successfully" "warning"
@@ -384,7 +469,7 @@ uds_multi_stage_deployment() {
   return 0
 }
 
-# Update the main deployment function to use automatic rollback
+# Main deployment function
 uds_do_deploy() {
   # Parse command-line arguments
   uds_parse_args "$@"
@@ -396,7 +481,7 @@ uds_do_deploy() {
   uds_execute_hook "config_loaded" "$APP_NAME"
   
   # Check if we should use multi-stage deployment
-  if [ "${MULTI_STAGE:-false}" = "true" ]; then
+  if [ "${MULTI_STAGE}" = "true" ]; then
     uds_multi_stage_deployment "$APP_NAME" || {
       uds_log "Multi-stage deployment failed" "error"
       return 1
@@ -404,7 +489,7 @@ uds_do_deploy() {
   else
     # Traditional deployment flow
     # Check dependencies if flag is set
-    if [ "${CHECK_DEPENDENCIES:-false}" = "true" ]; then
+    if [ "${CHECK_DEPENDENCIES}" = "true" ]; then
       if ! uds_check_deploy_dependencies "$APP_NAME" "$IMAGE" "$TAG"; then
         uds_log "Dependency check failed" "error"
         return 1
@@ -417,8 +502,8 @@ uds_do_deploy() {
       return 1
     }
     
-    # Deploy the application with automatic rollback
-    if [ "${AUTO_ROLLBACK:-true}" = "true" ]; then
+    # Deploy the application with automatic rollback if enabled
+    if [ "${AUTO_ROLLBACK}" = "true" ]; then
       uds_deploy_with_rollback || {
         uds_log "Deployment with rollback failed" "error"
         return 1
