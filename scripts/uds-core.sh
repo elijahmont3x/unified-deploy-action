@@ -1060,7 +1060,150 @@ uds_sanitize_env_vars() {
   echo "$sanitized"
 }
 
+# Prepare the deployment environment
+uds_prepare_deployment() {
+  uds_log "Preparing deployment for $APP_NAME" "info"
+  
+  # Create app directory if it doesn't exist
+  mkdir -p "$APP_DIR" || {
+    uds_log "Failed to create app directory: $APP_DIR" "error"
+    return 1
+  }
+  
+  # Execute pre-deploy hooks
+  uds_execute_hook "pre_deploy" "$APP_NAME" "$APP_DIR"
+  
+  # Check if we need to generate a Docker Compose file
+  if [ -z "$COMPOSE_FILE" ] || [ ! -f "$COMPOSE_FILE" ]; then
+    uds_log "Generating Docker Compose file" "info"
+    
+    local compose_file="${APP_DIR}/docker-compose.yml"
+    uds_generate_compose_file "$APP_NAME" "$IMAGE" "$TAG" "$PORT" "$compose_file" "$ENV_VARS" "$VOLUMES" "$USE_PROFILES" "$EXTRA_HOSTS"
+  else
+    # Copy the provided compose file
+    uds_log "Using provided Docker Compose file: $COMPOSE_FILE" "info"
+    cp "$COMPOSE_FILE" "${APP_DIR}/docker-compose.yml" || {
+      uds_log "Failed to copy compose file from $COMPOSE_FILE" "error"
+      return 1
+    }
+  fi
+  
+  # Set up Nginx configuration if domain is provided
+  if [ -n "$DOMAIN" ]; then
+    uds_log "Setting up Nginx configuration" "info"
+    uds_create_nginx_config "$APP_NAME" "$DOMAIN" "$ROUTE_TYPE" "$ROUTE" "$PORT" "$SSL"
+    
+    # Set up SSL if enabled
+    if [ "$SSL" = "true" ] && [ -n "$DOMAIN" ]; then
+      uds_log "Setting up SSL" "info"
+      
+      # Check if SSL plugin is available
+      if type plugin_ssl_check &>/dev/null; then
+        plugin_ssl_check "$APP_NAME"
+      fi
+    fi
+  fi
+  
+  uds_log "Deployment preparation completed successfully" "success"
+  return 0
+}
+
+# Deploy the application
+uds_deploy_application() {
+  uds_log "Deploying $APP_NAME" "info"
+  
+  # Check if we're in dry run mode
+  if [ "${DRY_RUN:-false}" = "true" ]; then
+    uds_log "DRY RUN: Would deploy $APP_NAME" "info"
+    return 0
+  fi
+  
+  # Change to application directory
+  cd "$APP_DIR" || {
+    uds_log "Failed to change to app directory: $APP_DIR" "error"
+    return 1
+  }
+  
+  # Check dependencies if needed
+  if [ "${CHECK_DEPENDENCIES:-false}" = "true" ]; then
+    if type uds_wait_for_dependencies &>/dev/null; then
+      uds_log "Checking service dependencies" "info"
+      uds_wait_for_dependencies "$APP_NAME" || {
+        uds_log "Dependency check failed" "error"
+        return 1
+      }
+    fi
+  fi
+  
+  # Deploy with Docker Compose
+  uds_log "Starting application containers" "info"
+  
+  local deploy_cmd="$UDS_DOCKER_COMPOSE_CMD -f docker-compose.yml up -d"
+  
+  # Add profile if using profiles
+  if [ "${USE_PROFILES:-true}" = "true" ]; then
+    deploy_cmd="$deploy_cmd --profile app"
+  fi
+  
+  # Execute deployment command
+  eval "$deploy_cmd" || {
+    uds_log "Failed to start application containers" "error"
+    
+    # Get container logs if available
+    if docker ps -a -q --filter "name=${APP_NAME}-" | grep -q .; then
+      uds_log "Container logs (last ${MAX_LOG_LINES:-20} lines):" "info"
+      docker logs --tail="${MAX_LOG_LINES:-20}" "${APP_NAME}-app" 2>&1 || true
+    fi
+    
+    return 1
+  }
+  
+  # Check application health if health module is available
+  if type uds_health_check_with_retry &>/dev/null; then
+    uds_log "Checking application health" "info"
+    
+    # Determine appropriate health check type if auto-detect is enabled
+    if [ "$HEALTH_CHECK_TYPE" = "auto" ] && type uds_detect_health_check_type &>/dev/null; then
+      local detected_type=$(uds_detect_health_check_type "$APP_NAME" "$IMAGE" "$HEALTH_CHECK")
+      uds_log "Auto-detected health check type: $detected_type" "debug"
+      HEALTH_CHECK_TYPE="$detected_type"
+    fi
+    
+    if [ "$HEALTH_CHECK_TYPE" != "none" ]; then
+      if ! uds_health_check_with_retry "$APP_NAME" "$PORT" "$HEALTH_CHECK" "5" "$HEALTH_CHECK_TIMEOUT" "$HEALTH_CHECK_TYPE" "${APP_NAME}-app" "$HEALTH_CHECK_COMMAND"; then
+        uds_log "Health check failed" "error"
+        
+        # Execute health-check-failed hooks
+        uds_execute_hook "health_check_failed" "$APP_NAME" "$APP_DIR"
+        
+        return 1
+      fi
+    fi
+  fi
+  
+  # Register the service in the registry
+  if [ "${VERSION_TRACKING:-true}" = "true" ]; then
+    uds_log "Registering service in registry" "info"
+    uds_register_service "$APP_NAME" "$DOMAIN" "$ROUTE_TYPE" "$ROUTE" "$PORT" "$IMAGE" "$TAG" "$PERSISTENT"
+  fi
+  
+  # Reload Nginx if needed
+  if [ -n "$DOMAIN" ]; then
+    uds_log "Reloading Nginx configuration" "info"
+    uds_reload_nginx || {
+      uds_log "Failed to reload Nginx configuration, but deployment continues" "warning"
+    }
+  fi
+  
+  # Execute post-deploy hooks
+  uds_execute_hook "post_deploy" "$APP_NAME" "$APP_DIR"
+  
+  uds_log "Deployment completed successfully" "success"
+  return 0
+}
+
 # Export functions for use in other scripts
+export -f uds_prepare_deployment uds_deploy_application
 export -f uds_log uds_load_config uds_register_plugin_arg uds_register_plugin_hook
 export -f uds_execute_hook uds_generate_compose_file
 export -f uds_create_nginx_config uds_reload_nginx 
