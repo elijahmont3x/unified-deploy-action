@@ -1,9 +1,36 @@
 #!/bin/bash
 set -eo pipefail
 
-# Function to log with timestamp
+# Function to log with timestamp and color-coded output
 log() {
-  echo "$(date "+%Y-%m-%d %H:%M:%S") $1"
+  local level="${2:-info}"
+  local color=""
+  local reset="\033[0m"
+  
+  case "$level" in
+    info)     color="\033[0;34m" ;; # Blue
+    success)  color="\033[0;32m" ;; # Green
+    warning)  color="\033[0;33m" ;; # Yellow
+    error)    color="\033[0;31m" ;; # Red
+    debug)    color="\033[0;37m" ;; # Gray
+    *)        color="\033[0m"    ;; # Default
+  esac
+  
+  echo -e "$(date "+%Y-%m-%d %H:%M:%S") ${color}[${level^^}]${reset} $1"
+  
+  # Also log to GITHUB_STEP_SUMMARY if available in GitHub Actions
+  if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+    local github_level_icon=""
+    case "$level" in
+      info)     github_level_icon="ℹ️" ;;
+      success)  github_level_icon="✅" ;;
+      warning)  github_level_icon="⚠️" ;;
+      error)    github_level_icon="❌" ;;
+      debug)    github_level_icon="🔍" ;;
+      *)        github_level_icon="➡️" ;;
+    esac
+    echo "$github_level_icon $(date "+%Y-%m-%d %H:%M:%S") - $1" >> $GITHUB_STEP_SUMMARY
+  fi
 }
 
 log "UDS Docker Action started"
@@ -28,25 +55,53 @@ cleanup() {
 # Ensure cleanup runs on exit
 trap cleanup EXIT
 
-# Function to handle errors
+# Function to handle errors with GitHub Actions integration
 error_exit() {
-  log "ERROR: $1"
+  log "ERROR: $1" "error"
+  
   # Set failure output for GitHub Actions
   if [ -n "$GITHUB_OUTPUT" ]; then
     echo "status=failure" >> $GITHUB_OUTPUT
     echo "error_message=$1" >> $GITHUB_OUTPUT
+    echo "logs=$(tail -n 20 /opt/uds/logs/uds.log 2>/dev/null || echo 'No logs available')" >> $GITHUB_OUTPUT
   fi
+  
+  # Add to GitHub step summary if available
+  if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+    echo "## ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+    echo "**Error:** $1" >> $GITHUB_STEP_SUMMARY
+    echo "" >> $GITHUB_STEP_SUMMARY
+    echo "### Deployment Logs" >> $GITHUB_STEP_SUMMARY
+    echo '```' >> $GITHUB_STEP_SUMMARY
+    tail -n 30 /opt/uds/logs/uds.log 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "No logs available" >> $GITHUB_STEP_SUMMARY
+    echo '```' >> $GITHUB_STEP_SUMMARY
+  fi
+  
   exit 1
 }
 
-# Set up GitHub Actions output
+# Set up GitHub Actions output with enhanced formatting
 set_output() {
   local name="$1"
   local value="$2"
+  
   if [ -n "$GITHUB_OUTPUT" ]; then
-    echo "${name}=${value}" >> $GITHUB_OUTPUT
+    # Handle multi-line values for GitHub Actions
+    if [[ "$value" == *$'\n'* ]]; then
+      # Use EOF delimiter for multi-line values
+      echo "$name<<EOF" >> $GITHUB_OUTPUT
+      echo "$value" >> $GITHUB_OUTPUT
+      echo "EOF" >> $GITHUB_OUTPUT
+    else
+      echo "${name}=${value}" >> $GITHUB_OUTPUT
+    fi
   else
-    log "Warning: GITHUB_OUTPUT not set, cannot set output: ${name}=${value}"
+    log "Warning: GITHUB_OUTPUT not set, cannot set output: ${name}" "warning"
+  fi
+  
+  # Also log to step summary for visibility
+  if [ -n "$GITHUB_STEP_SUMMARY" ] && [ "$name" != "logs" ]; then
+    echo "**${name}:** ${value}" >> $GITHUB_STEP_SUMMARY
   fi
 }
 
@@ -86,33 +141,58 @@ get_input() {
   local name="$1"
   local default="$2"
   local is_boolean="${3:-false}"
+  local is_expanded="${4:-false}"
   
   # Handle hyphenated input names
-  local value="$(printenv "INPUT_${name}" || printenv "INPUT_${name//_/-}" || echo "$default")"
+  local env_name="INPUT_${name}"
+  local env_name_hyphenated="INPUT_${name//_/-}"
   
-  # For boolean values, don't sanitize
-  if [ "$is_boolean" = "true" ]; then
-    echo "$value"
+  # Try to get value from environment variables
+  local value=""
+  if [ -n "${!env_name}" ]; then
+    value="${!env_name}"
+  elif [ -n "${!env_name_hyphenated}" ]; then
+    value="${!env_name_hyphenated}"
   else
-    sanitize_value "$value"
+    value="$default"
+  fi
+  
+  # Handle boolean values specially
+  if [ "$is_boolean" = "true" ]; then
+    # Normalize boolean values to "true" or "false"
+    value="${value,,}" # Convert to lowercase
+    if [[ "$value" == "true" || "$value" == "yes" || "$value" == "y" || "$value" == "1" ]]; then
+      echo "true"
+    else
+      echo "false"
+    fi
+    return 0
+  elif [ "$is_expanded" = "true" ]; then
+    # Return value without sanitization for expanded values like JSON
+    echo "$value"
+    return 0
+  else
+    # Sanitize regular values
+    sanitize_value "$value" "false"
+    return $?
   fi
 }
 
-# Validate required inputs
+# Validate required inputs with enhanced error messages
 if [ -z "${INPUT_APP_NAME}" ] && [ -z "$(printenv 'INPUT_APP-NAME')" ]; then
-  error_exit "app-name is required"
+  error_exit "app-name is required - please specify the name of your application"
 fi
 
 if [ -z "${INPUT_HOST}" ]; then
-  error_exit "host is required"
+  error_exit "host is required - please specify the target server hostname or IP"
 fi
 
 if [ -z "${INPUT_USERNAME}" ]; then
-  error_exit "username is required"
+  error_exit "username is required - please specify the SSH username for the target server"
 fi
 
 if [ -z "${INPUT_SSH_KEY}" ] && [ -z "$(printenv 'INPUT_SSH-KEY')" ]; then
-  error_exit "ssh-key is required"
+  error_exit "ssh-key is required - please provide an SSH private key for authentication"
 fi
 
 # Set APP_NAME - handle hyphenated input name
@@ -201,14 +281,14 @@ EOF
 chmod 600 "$SSH_DIR/config" || error_exit "Failed to set permissions on SSH config"
 SSH_COMMAND="ssh -F $SSH_DIR/config"
 
-# Test SSH connection before proceeding
+# Test SSH connection before proceeding with enhanced debugging
 log "Testing SSH connection..."
 if ! $SSH_COMMAND -o ConnectTimeout=10 "$USERNAME@$HOST" "echo 'SSH connection successful'" > /dev/null 2>&1; then
   # Enhanced SSH connection troubleshooting
-  log "Checking SSH connection with increased verbosity..."
+  log "Checking SSH connection with increased verbosity..." "warning"
   $SSH_COMMAND -v -o ConnectTimeout=10 "$USERNAME@$HOST" "echo 'SSH connection test'" > /tmp/ssh_debug.log 2>&1 || true
   
-  # Check for common SSH errors
+  # Check for common SSH errors with detailed error messages
   if grep -q "Connection refused" /tmp/ssh_debug.log; then
     error_exit "Failed to establish SSH connection to $HOST: Connection refused. Please check if SSH service is running."
   elif grep -q "Connection timed out" /tmp/ssh_debug.log; then
@@ -222,6 +302,8 @@ if ! $SSH_COMMAND -o ConnectTimeout=10 "$USERNAME@$HOST" "echo 'SSH connection s
   fi
 fi
 
+log "SSH connection successful" "success"
+
 # Create JSON config with proper handling of complex values
 log "Creating configuration file..."
 CONFIG_FILE=$(mktemp)
@@ -232,14 +314,14 @@ fi
 # Process environment variables into valid JSON
 ENV_VARS_JSON="$(printenv 'INPUT_ENV-VARS' || echo '{}')"
 if ! echo "$ENV_VARS_JSON" | jq empty 2>/dev/null; then
-  log "Warning: env-vars is not valid JSON, using empty object"
+  log "Warning: env-vars is not valid JSON, using empty object" "warning"
   ENV_VARS_JSON="{}"
 fi
 
 # Process domain with check for empty value
 DOMAIN="$(get_input "DOMAIN" "")"
 if [ -z "$DOMAIN" ]; then
-  error_exit "domain is required"
+  error_exit "domain is required - please specify the domain name for deployment"
 fi
 
 # Validate domain format
@@ -296,12 +378,23 @@ EOL
 
 # Validate the JSON is correct
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
-  log "ERROR: Invalid JSON configuration"
+  log "ERROR: Invalid JSON configuration" "error"
   cat "$CONFIG_FILE"
   error_exit "Failed to create valid JSON configuration"
 fi
 
-log "Configuration file created successfully"
+log "Configuration file created successfully" "success"
+
+# Add summary to GitHub step summary if available
+if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+  echo "## 🚀 UDS Deployment" >> $GITHUB_STEP_SUMMARY
+  echo "**Application:** ${APP_NAME}" >> $GITHUB_STEP_SUMMARY
+  echo "**Domain:** ${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+  echo "**Image:** $(get_input "IMAGE" "N/A")" >> $GITHUB_STEP_SUMMARY
+  echo "**Tag:** $(get_input "TAG" "latest")" >> $GITHUB_STEP_SUMMARY
+  echo "**Command:** $(get_input "COMMAND" "deploy")" >> $GITHUB_STEP_SUMMARY
+  echo "" >> $GITHUB_STEP_SUMMARY
+fi
 
 # Prepare commands for the remote server
 WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
@@ -343,8 +436,8 @@ DEPLOY_CMD="$SETUP_CMD && mkdir -p $WORKING_DIR/logs && cat > $WORKING_DIR/confi
 DEPLOY_OUTPUT_FILE=$(mktemp)
 log "Executing deployment via SSH..."
 if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFIG_FILE" > "$DEPLOY_OUTPUT_FILE" 2>&1; then
-  log "ERROR: Deployment failed on remote server"
-  log "Checking for detailed error logs..."
+  log "ERROR: Deployment failed on remote server" "error"
+  log "Checking for detailed error logs..." "info"
   
   # Display output content
   cat "$DEPLOY_OUTPUT_FILE" || true
@@ -357,6 +450,15 @@ if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFI
   
   # Get Docker container status if applicable
   $SSH_COMMAND -o ConnectTimeout=10 "$USERNAME@$HOST" "if command -v docker > /dev/null; then echo 'Docker container status:'; docker ps -a | grep '$APP_NAME' || echo 'No containers found'; fi" || true
+  
+  # Add detailed error information to GitHub step summary if available
+  if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+    echo "## ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+    echo "### Error Logs" >> $GITHUB_STEP_SUMMARY
+    echo '```' >> $GITHUB_STEP_SUMMARY
+    cat "$DEPLOY_OUTPUT_FILE" | head -n 50 >> $GITHUB_STEP_SUMMARY
+    echo '```' >> $GITHUB_STEP_SUMMARY
+  fi
   
   # Set outputs for GitHub Actions
   set_output "status" "failure"
@@ -405,6 +507,18 @@ set_output "deployment_url" "$DEPLOYMENT_URL"
 set_output "version" "$(get_input "TAG" "latest")"
 set_output "logs" "$DEPLOY_LOGS"
 
+# Add success message to GitHub step summary if available
+if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+  echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+  echo "**Deployment URL:** ${DEPLOYMENT_URL}" >> $GITHUB_STEP_SUMMARY
+  echo "**Version:** $(get_input "TAG" "latest")" >> $GITHUB_STEP_SUMMARY
+  echo "" >> $GITHUB_STEP_SUMMARY
+  echo "### Deployment Logs" >> $GITHUB_STEP_SUMMARY
+  echo '```' >> $GITHUB_STEP_SUMMARY
+  echo "$DEPLOY_LOGS" >> $GITHUB_STEP_SUMMARY
+  echo '```' >> $GITHUB_STEP_SUMMARY
+fi
+
 rm -f "$DEPLOY_OUTPUT_FILE"
-log "UDS Docker Action completed successfully"
-log "Application deployed to: $DEPLOYMENT_URL"
+log "UDS Docker Action completed successfully" "success"
+log "Application deployed to: $DEPLOYMENT_URL" "success"

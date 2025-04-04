@@ -479,7 +479,7 @@ uds_wait_for_dependencies() {
     for dep in "${deps_array[@]}"; do
       local dep_name="${dep%%:*}"
       if [ -f "${temp_dir}/${dep_name}.status" ]; then
-        local status=$(cat "${temp_dir}/${dep_name}.status")
+        local status=$(cat "${temp_dir}/${dep_name}.status}")
         
         if [ "$status" = "success" ]; then
           uds_log "Dependency $dep_name is available" "success"

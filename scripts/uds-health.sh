@@ -482,7 +482,7 @@ uds_service_health_check() {
   if [ -z "$check_command" ]; then
     uds_log "No check command defined for $service_type" "warning"
     return $HEALTH_CHECK_FAILURE
-  }
+  fi
   
   while [ $current_time -lt $end_time ]; do
     # Check if container is running
@@ -490,7 +490,7 @@ uds_service_health_check() {
       sleep 2
       current_time=$(date +%s)
       continue
-    }
+    fi
     
     # Try to execute the check command
     local check_result

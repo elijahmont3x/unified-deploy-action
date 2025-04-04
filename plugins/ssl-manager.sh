@@ -145,7 +145,7 @@ plugin_ssl_setup() {
   }
   
   # Use Let's Encrypt if certbot is available and we have an email
-  if command -v certbot &> /dev/null && [ -n "$email" ]; then
+  if command -v certbot &>/dev/null && [ -n "$email" ]; then
     ssl_progress 10 "Using Let's Encrypt to obtain SSL certificate"
     
     # Build certbot command with enhanced options
