@@ -41,6 +41,30 @@ set_output() {
   echo "${name}=${value}" >> $GITHUB_OUTPUT
 }
 
+# Function to sanitize values for safe use in commands
+sanitize_value() {
+  local value="$1"
+  # Remove any characters that could be used for command injection
+  echo "$value" | tr -cd 'a-zA-Z0-9._-/:=' 
+}
+
+# Function to get and sanitize input value
+get_input() {
+  local name="$1"
+  local default="$2"
+  local is_boolean="${3:-false}"
+  
+  # Handle hyphenated input names
+  local value="$(printenv "INPUT_${name}" || printenv "INPUT_${name//_/-}" || echo "$default")"
+  
+  # For boolean values, don't sanitize
+  if [ "$is_boolean" = "true" ]; then
+    echo "$value"
+  else
+    sanitize_value "$value"
+  fi
+}
+
 # Validate required inputs
 if [ -z "${INPUT_APP_NAME}" ] && [ -z "$(printenv 'INPUT_APP-NAME')" ]; then
   error_exit "app-name is required"
@@ -64,12 +88,27 @@ if [ -z "$APP_NAME" ]; then
   APP_NAME=$(printenv 'INPUT_APP-NAME')
 fi
 
+# Validate APP_NAME format for safety
+if ! [[ "$APP_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+  error_exit "Invalid app-name format. Use only alphanumeric characters, underscores, periods, and hyphens."
+fi
+
 # Access other key variables
 HOST="${INPUT_HOST}"
 USERNAME="${INPUT_USERNAME}"
 SSH_KEY=$(printenv 'INPUT_SSH-KEY')
 if [ -z "$SSH_KEY" ]; then
   SSH_KEY="${INPUT_SSH_KEY}"
+fi
+
+# Validate HOST format
+if ! [[ "$HOST" =~ ^[a-zA-Z0-9._-]+$ ]] && ! [[ "$HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  error_exit "Invalid host format. Use a valid hostname or IP address."
+fi
+
+# Validate USERNAME format
+if ! [[ "$USERNAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+  error_exit "Invalid username format. Use only alphanumeric characters, underscores, periods, and hyphens."
 fi
 
 log "Processing inputs: APP_NAME='${APP_NAME}', HOST='${HOST}', USERNAME='${USERNAME}'"
@@ -149,56 +188,61 @@ if ! echo "$ENV_VARS_JSON" | jq empty 2>/dev/null; then
 fi
 
 # Process domain with check for empty value
-DOMAIN="$(printenv 'INPUT_DOMAIN' || echo '')"
+DOMAIN="$(get_input "DOMAIN" "")"
 if [ -z "$DOMAIN" ]; then
   error_exit "domain is required"
 fi
 
-# Create the basic config structure with common fields
-cat > "$CONFIG_FILE" << EOF || error_exit "Failed to write config file"
+# Validate domain format
+if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+  error_exit "Invalid domain format. Please provide a valid domain name."
+fi
+
+# Create the configuration file with sanitized inputs
+cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
 {
-  "command": "$(printenv 'INPUT_COMMAND' || echo 'deploy')",
-  "app_name": "$APP_NAME",
-  "image": "$(printenv 'INPUT_IMAGE' || echo '')",
-  "tag": "$(printenv 'INPUT_TAG' || echo 'latest')",
-  "domain": "$DOMAIN",
-  "route_type": "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')",
-  "route": "$(printenv 'INPUT_ROUTE' || echo '')",
-  "port": "$(printenv 'INPUT_PORT' || echo '3000')",
-  "ssl": $(printenv 'INPUT_SSL' || echo 'true'),
-  "ssl_email": "$(printenv 'INPUT_SSL-EMAIL' || echo '')",
-  "ssl_wildcard": $(printenv 'INPUT_SSL-WILDCARD' || echo 'false'),
-  "ssl_dns_provider": "$(printenv 'INPUT_SSL-DNS-PROVIDER' || echo '')",
-  "ssl_dns_credentials": "$(printenv 'INPUT_SSL-DNS-CREDENTIALS' || echo '')",
-  "volumes": "$(printenv 'INPUT_VOLUMES' || echo '')",
+  "command": "$(get_input "COMMAND" "deploy")",
+  "app_name": "${APP_NAME}",
+  "image": "$(get_input "IMAGE" "")",
+  "tag": "$(get_input "TAG" "latest")",
+  "domain": "${DOMAIN}",
+  "route_type": "$(get_input "ROUTE_TYPE" "path")",
+  "route": "$(get_input "ROUTE" "")",
+  "port": "$(get_input "PORT" "3000")",
+  "ssl": $(get_input "SSL" "true" "true"),
+  "ssl_email": "$(get_input "SSL_EMAIL" "")",
+  "ssl_wildcard": $(get_input "SSL_WILDCARD" "false" "true"),
+  "ssl_dns_provider": "$(get_input "SSL_DNS_PROVIDER" "")",
+  "ssl_dns_credentials": "$(get_input "SSL_DNS_CREDENTIALS" "")",
+  "volumes": "$(get_input "VOLUMES" "")",
   "env_vars": $ENV_VARS_JSON,
-  "persistent": $(printenv 'INPUT_PERSISTENT' || echo 'false'),
-  "compose_file": "$(printenv 'INPUT_COMPOSE-FILE' || echo '')",
-  "use_profiles": $(printenv 'INPUT_USE-PROFILES' || echo 'true'),
-  "multi_stage": $(printenv 'INPUT_MULTI-STAGE' || echo 'false'),
-  "check_dependencies": $(printenv 'INPUT_CHECK-DEPENDENCIES' || echo 'false'),
-  "health_check": "$(printenv 'INPUT_HEALTH-CHECK' || echo '/health')",
-  "health_check_timeout": "$(printenv 'INPUT_HEALTH-CHECK-TIMEOUT' || echo '60')",
-  "health_check_type": "$(printenv 'INPUT_HEALTH-CHECK-TYPE' || echo 'auto')",
-  "health_check_command": "$(printenv 'INPUT_HEALTH-CHECK-COMMAND' || echo '')",
-  "port_auto_assign": $(printenv 'INPUT_PORT-AUTO-ASSIGN' || echo 'true'),
-  "version_tracking": $(printenv 'INPUT_VERSION-TRACKING' || echo 'true'),
-  "secure_mode": $(printenv 'INPUT_SECURE-MODE' || echo 'false'),
-  "check_system": $(printenv 'INPUT_CHECK-SYSTEM' || echo 'false'),
-  "extra_hosts": "$(printenv 'INPUT_EXTRA-HOSTS' || echo '')",
-  "plugins": "$(printenv 'INPUT_PLUGINS' || echo '')",
-  "pg_migration_enabled": $(printenv 'INPUT_PG-MIGRATION-ENABLED' || echo 'false'),
-  "pg_connection_string": "$(printenv 'INPUT_PG-CONNECTION-STRING' || echo '')",
-  "pg_backup_enabled": $(printenv 'INPUT_PG-BACKUP-ENABLED' || echo 'true'),
-  "pg_migration_script": "$(printenv 'INPUT_PG-MIGRATION-SCRIPT' || echo '')",
-  "telegram_enabled": $(printenv 'INPUT_TELEGRAM-ENABLED' || echo 'false'),
-  "telegram_bot_token": "$(printenv 'INPUT_TELEGRAM-BOT-TOKEN' || echo '')",
-  "telegram_chat_id": "$(printenv 'INPUT_TELEGRAM-CHAT-ID' || echo '')",
-  "telegram_notify_level": "$(printenv 'INPUT_TELEGRAM-NOTIFY-LEVEL' || echo 'info')",
-  "telegram_include_logs": $(printenv 'INPUT_TELEGRAM-INCLUDE-LOGS' || echo 'true'),
-  "max_log_lines": "$(printenv 'INPUT_MAX-LOG-LINES' || echo '50')"
+  "persistent": $(get_input "PERSISTENT" "false" "true"),
+  "compose_file": "$(get_input "COMPOSE_FILE" "")",
+  "use_profiles": $(get_input "USE_PROFILES" "true" "true"),
+  "multi_stage": $(get_input "MULTI_STAGE" "false" "true"),
+  "check_dependencies": $(get_input "CHECK_DEPENDENCIES" "false" "true"),
+  "health_check": "$(get_input "HEALTH_CHECK" "/health")",
+  "health_check_timeout": "$(get_input "HEALTH_CHECK_TIMEOUT" "60")",
+  "health_check_type": "$(get_input "HEALTH_CHECK_TYPE" "auto")",
+  "health_check_command": "$(get_input "HEALTH_CHECK_COMMAND" "")",
+  "port_auto_assign": $(get_input "PORT_AUTO_ASSIGN" "true" "true"),
+  "version_tracking": $(get_input "VERSION_TRACKING" "true" "true"),
+  "secure_mode": $(get_input "SECURE_MODE" "false" "true"),
+  "check_system": $(get_input "CHECK_SYSTEM" "false" "true"),
+  "extra_hosts": "$(get_input "EXTRA_HOSTS" "")",
+  "plugins": "$(get_input "PLUGINS" "")",
+  "pg_migration_enabled": $(get_input "PG_MIGRATION_ENABLED" "false" "true"),
+  "pg_connection_string": "$(get_input "PG_CONNECTION_STRING" "")",
+  "pg_backup_enabled": $(get_input "PG_BACKUP_ENABLED" "true" "true"),
+  "pg_migration_script": "$(get_input "PG_MIGRATION_SCRIPT" "")",
+  "telegram_enabled": $(get_input "TELEGRAM_ENABLED" "false" "true"),
+  "telegram_bot_token": "$(get_input "TELEGRAM_BOT_TOKEN" "")",
+  "telegram_chat_id": "$(get_input "TELEGRAM_CHAT_ID" "")",
+  "telegram_notify_level": "$(get_input "TELEGRAM_NOTIFY_LEVEL" "info")",
+  "telegram_include_logs": $(get_input "TELEGRAM_INCLUDE_LOGS" "true" "true"),
+  "max_log_lines": "$(get_input "MAX_LOG_LINES" "50")"
 }
-EOF
+EOL
 
 # Validate the JSON is correct
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
@@ -210,8 +254,8 @@ fi
 log "Configuration file created successfully"
 
 # Prepare commands for the remote server
-WORKING_DIR="$(printenv 'INPUT_WORKING-DIR' || echo '/opt/uds')"
-COMMAND="$(printenv 'INPUT_COMMAND' || echo 'deploy')"
+WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
+COMMAND="$(get_input "COMMAND" "deploy")"
 
 # Enhanced installation with error handling and progress tracking
 SETUP_CMD="set -e; mkdir -p $WORKING_DIR/configs $WORKING_DIR/scripts $WORKING_DIR/plugins"
@@ -267,7 +311,7 @@ if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFI
   # Set outputs for GitHub Actions
   set_output "status" "failure"
   set_output "deployment_url" ""
-  set_output "version" "$INPUT_TAG"
+  set_output "version" "$(get_input "TAG" "latest")"
   
   error_exit "Deployment failed on remote server"
 fi
@@ -282,16 +326,20 @@ elif grep -q "http://${DOMAIN}" "$DEPLOY_OUTPUT_FILE"; then
   DEPLOYMENT_URL=$(grep -o "http://${DOMAIN}[^ ]*" "$DEPLOY_OUTPUT_FILE" | head -1)
 else
   # Construct URL based on inputs if not found in output
-  if [ "$(printenv 'INPUT_SSL' || echo 'true')" = "true" ]; then
+  local ssl=$(get_input "SSL" "true" "true")
+  local route_type=$(get_input "ROUTE_TYPE" "path")
+  local route=$(get_input "ROUTE" "")
+  
+  if [ "$ssl" = "true" ]; then
     URL_SCHEME="https"
   else
     URL_SCHEME="http"
   fi
   
-  if [ "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')" = "subdomain" ] && [ -n "$(printenv 'INPUT_ROUTE' || echo '')" ]; then
-    DEPLOYMENT_URL="${URL_SCHEME}://$(printenv 'INPUT_ROUTE').${DOMAIN}"
-  elif [ "$(printenv 'INPUT_ROUTE-TYPE' || echo 'path')" = "path" ] && [ -n "$(printenv 'INPUT_ROUTE' || echo '')" ]; then
-    DEPLOYMENT_URL="${URL_SCHEME}://${DOMAIN}/$(printenv 'INPUT_ROUTE')"
+  if [ "$route_type" = "subdomain" ] && [ -n "$route" ]; then
+    DEPLOYMENT_URL="${URL_SCHEME}://${route}.${DOMAIN}"
+  elif [ "$route_type" = "path" ] && [ -n "$route" ]; then
+    DEPLOYMENT_URL="${URL_SCHEME}://${DOMAIN}/${route}"
   else
     DEPLOYMENT_URL="${URL_SCHEME}://${DOMAIN}"
   fi
@@ -300,7 +348,7 @@ fi
 # Set outputs for GitHub Actions
 set_output "status" "success"
 set_output "deployment_url" "$DEPLOYMENT_URL"
-set_output "version" "$(printenv 'INPUT_TAG' || echo 'latest')"
+set_output "version" "$(get_input "TAG" "latest")"
 
 rm -f "$DEPLOY_OUTPUT_FILE"
 log "UDS Docker Action completed successfully"
