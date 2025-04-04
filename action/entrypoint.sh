@@ -31,6 +31,11 @@ trap cleanup EXIT
 # Function to handle errors
 error_exit() {
   log "ERROR: $1"
+  # Set failure output for GitHub Actions
+  if [ -n "$GITHUB_OUTPUT" ]; then
+    echo "status=failure" >> $GITHUB_OUTPUT
+    echo "error_message=$1" >> $GITHUB_OUTPUT
+  fi
   exit 1
 }
 
@@ -38,7 +43,11 @@ error_exit() {
 set_output() {
   local name="$1"
   local value="$2"
-  echo "${name}=${value}" >> $GITHUB_OUTPUT
+  if [ -n "$GITHUB_OUTPUT" ]; then
+    echo "${name}=${value}" >> $GITHUB_OUTPUT
+  else
+    log "Warning: GITHUB_OUTPUT not set, cannot set output: ${name}=${value}"
+  fi
 }
 
 # Function to sanitize values for safe use in commands
@@ -163,6 +172,7 @@ Host $HOST
   ConnectTimeout 30
   ServerAliveInterval 60
   ServerAliveCountMax 3
+  LogLevel ERROR
 EOF
 chmod 600 "$SSH_DIR/config" || error_exit "Failed to set permissions on SSH config"
 SSH_COMMAND="ssh -F $SSH_DIR/config"
@@ -170,7 +180,22 @@ SSH_COMMAND="ssh -F $SSH_DIR/config"
 # Test SSH connection before proceeding
 log "Testing SSH connection..."
 if ! $SSH_COMMAND -o ConnectTimeout=10 "$USERNAME@$HOST" "echo 'SSH connection successful'" > /dev/null 2>&1; then
-  error_exit "Failed to establish SSH connection to $HOST. Please check credentials and network connectivity."
+  # Enhanced SSH connection troubleshooting
+  log "Checking SSH connection with increased verbosity..."
+  $SSH_COMMAND -v -o ConnectTimeout=10 "$USERNAME@$HOST" "echo 'SSH connection test'" > /tmp/ssh_debug.log 2>&1 || true
+  
+  # Check for common SSH errors
+  if grep -q "Connection refused" /tmp/ssh_debug.log; then
+    error_exit "Failed to establish SSH connection to $HOST: Connection refused. Please check if SSH service is running."
+  elif grep -q "Connection timed out" /tmp/ssh_debug.log; then
+    error_exit "Failed to establish SSH connection to $HOST: Connection timed out. Please check network connectivity and firewall rules."
+  elif grep -q "Permission denied" /tmp/ssh_debug.log; then
+    error_exit "Failed to establish SSH connection to $HOST: Permission denied. Please check SSH credentials."
+  elif grep -q "Host key verification failed" /tmp/ssh_debug.log; then
+    error_exit "Failed to establish SSH connection to $HOST: Host key verification failed."
+  else
+    error_exit "Failed to establish SSH connection to $HOST. Please check credentials and network connectivity."
+  fi
 fi
 
 # Create JSON config with proper handling of complex values
@@ -240,7 +265,8 @@ cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
   "telegram_chat_id": "$(get_input "TELEGRAM_CHAT_ID" "")",
   "telegram_notify_level": "$(get_input "TELEGRAM_NOTIFY_LEVEL" "info")",
   "telegram_include_logs": $(get_input "TELEGRAM_INCLUDE_LOGS" "true" "true"),
-  "max_log_lines": "$(get_input "MAX_LOG_LINES" "50")"
+  "max_log_lines": "$(get_input "MAX_LOG_LINES" "50")",
+  "auto_rollback": $(get_input "AUTO_ROLLBACK" "true" "true")
 }
 EOL
 
@@ -248,7 +274,7 @@ EOL
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
   log "ERROR: Invalid JSON configuration"
   cat "$CONFIG_FILE"
-  exit 1
+  error_exit "Failed to create valid JSON configuration"
 fi
 
 log "Configuration file created successfully"
@@ -312,6 +338,7 @@ if ! $SSH_COMMAND -o ConnectTimeout=30 "$USERNAME@$HOST" "$DEPLOY_CMD" < "$CONFI
   set_output "status" "failure"
   set_output "deployment_url" ""
   set_output "version" "$(get_input "TAG" "latest")"
+  set_output "logs" "$(cat "$DEPLOY_OUTPUT_FILE" | head -n 50)"
   
   error_exit "Deployment failed on remote server"
 fi
@@ -345,10 +372,15 @@ else
   fi
 fi
 
+# Extract deployment logs for GitHub Actions output
+DEPLOY_LOGS=$(cat "$DEPLOY_OUTPUT_FILE" | tail -n 50)
+
 # Set outputs for GitHub Actions
 set_output "status" "success"
 set_output "deployment_url" "$DEPLOYMENT_URL"
 set_output "version" "$(get_input "TAG" "latest")"
+set_output "logs" "$DEPLOY_LOGS"
 
 rm -f "$DEPLOY_OUTPUT_FILE"
 log "UDS Docker Action completed successfully"
+log "Application deployed to: $DEPLOYMENT_URL"

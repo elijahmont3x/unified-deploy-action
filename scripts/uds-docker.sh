@@ -78,11 +78,22 @@ uds_resolve_port_conflicts() {
       echo "$available_port"
       return 0
     else
-      uds_log "Failed to find an available port" "error"
+      uds_log "Failed to find an available port in range $port-65535" "error"
       return 1
     fi
   else
     uds_log "Port $port is already in use and auto-assign is disabled" "error"
+    # Show processes using this port for debugging
+    if command -v lsof &>/dev/null; then
+      uds_log "Process using port $port:" "info"
+      lsof -i ":$port" || true
+    elif command -v netstat &>/dev/null; then
+      uds_log "Process using port $port:" "info"
+      netstat -tulpn | grep ":$port " || true
+    elif command -v ss &>/dev/null; then
+      uds_log "Process using port $port:" "info"
+      ss -tulpn | grep ":$port " || true
+    fi
     return 1
   fi
 }
@@ -173,6 +184,9 @@ EOL
       # Add extra hosts
       _add_extra_hosts "$extra_hosts" "$output_file"
       
+      # Add healthcheck if applicable
+      _add_health_check "$output_file" "$service_name"
+      
       # Add networks
       echo "    networks:" >> "$output_file"
       echo "      - ${app_name}-network" >> "$output_file"
@@ -219,6 +233,9 @@ EOL
     # Add extra hosts
     _add_extra_hosts "$extra_hosts" "$output_file"
     
+    # Add healthcheck
+    _add_health_check "$output_file" "app"
+    
     # Add networks
     echo "    networks:" >> "$output_file"
     echo "      - ${app_name}-network" >> "$output_file"
@@ -232,10 +249,114 @@ networks:
     name: ${app_name}-network
 EOL
 
+  # Add volumes section if defined in volumes input
+  if [ -n "$volumes" ] && [[ "$volumes" == *":"* ]]; then
+    _add_named_volumes "$output_file" "$app_name" "$volumes"
+  fi
+
   # Secure the compose file
   uds_secure_permissions "$output_file" 600
   
   uds_log "Generated docker-compose.yml at $output_file" "debug"
+}
+
+# Add named volumes section for persistent storage
+_add_named_volumes() {
+  local output_file="$1"
+  local app_name="$2"
+  local volumes="$3"
+  
+  # Extract volume names from the volume mappings
+  local named_volumes=()
+  
+  # Handle both comma-separated string and JSON array formats
+  if [[ "$volumes" == "["* ]]; then
+    # JSON array format
+    local volume_list=$(echo "$volumes" | jq -r '.[]')
+    IFS=$'\n' read -rd '' -a volume_array <<< "$volume_list"
+    for volume in "${volume_array[@]}"; do
+      if [[ "$volume" == *":"* ]] && [[ ! "$volume" == "./"* ]] && [[ ! "$volume" == "/"* ]] && [[ ! "$volume" == ".:"* ]]; then
+        local vol_name=$(echo "$volume" | cut -d: -f1)
+        # Skip if it's a relative path
+        if [[ ! "$vol_name" =~ ^[./] ]]; then
+          named_volumes+=("$vol_name")
+        fi
+      fi
+    done
+  else
+    # Comma-separated string format
+    IFS=',' read -ra VOLUME_MAPPINGS <<< "$volumes"
+    for volume in "${VOLUME_MAPPINGS[@]}"; do
+      local vol_clean=$(echo "$volume" | tr -d ' ')
+      if [[ "$vol_clean" == *":"* ]] && [[ ! "$vol_clean" == "./"* ]] && [[ ! "$vol_clean" == "/"* ]] && [[ ! "$vol_clean" == ".:"* ]]; then
+        local vol_name=$(echo "$vol_clean" | cut -d: -f1)
+        # Skip if it's a relative path
+        if [[ ! "$vol_name" =~ ^[./] ]]; then
+          named_volumes+=("$vol_name")
+        fi
+      fi
+    done
+  fi
+  
+  # Add volumes section if we have named volumes
+  if [ ${#named_volumes[@]} -gt 0 ]; then
+    echo "" >> "$output_file"
+    echo "volumes:" >> "$output_file"
+    
+    # Add each named volume
+    for vol_name in "${named_volumes[@]}"; do
+      echo "  ${vol_name}:" >> "$output_file"
+      echo "    name: ${vol_name}" >> "$output_file"
+      echo "    external: false" >> "$output_file"
+    done
+  fi
+}
+
+# Helper function to add health check configuration
+_add_health_check() {
+  local output_file="$1"
+  local service_name="$2"
+  
+  # Check if we have health check info from environment
+  if [ -n "${HEALTH_CHECK:-}" ] && [ "${HEALTH_CHECK}" != "none" ] && [ "${HEALTH_CHECK}" != "disabled" ]; then
+    local health_check_type="${HEALTH_CHECK_TYPE:-http}"
+    local health_check_timeout="${HEALTH_CHECK_TIMEOUT:-60}"
+    
+    # Only add health check for HTTP or TCP types (internal Docker health checks)
+    if [ "$health_check_type" = "http" ] || [ "$health_check_type" = "tcp" ]; then
+      echo "    healthcheck:" >> "$output_file"
+      
+      if [ "$health_check_type" = "http" ]; then
+        local health_path="${HEALTH_CHECK}"
+        if [ "$health_path" = "auto" ]; then
+          health_path="/health"
+        fi
+        
+        # Handle port mapping if specified
+        local port="${PORT:-3000}"
+        if [[ "$port" == *":"* ]]; then
+          port=$(echo "$port" | cut -d: -f2)
+        fi
+        
+        # HTTP health check
+        echo "      test: [\"CMD\", \"wget\", \"--no-verbose\", \"--tries=1\", \"--spider\", \"http://localhost:${port}${health_path}\"]" >> "$output_file"
+      else
+        # TCP health check
+        local port="${PORT:-3000}"
+        if [[ "$port" == *":"* ]]; then
+          port=$(echo "$port" | cut -d: -f2)
+        fi
+        
+        echo "      test: [\"CMD\", \"nc\", \"-z\", \"localhost\", \"${port}\"]" >> "$output_file"
+      fi
+      
+      # Add common healthcheck settings
+      echo "      interval: 30s" >> "$output_file"
+      echo "      timeout: 10s" >> "$output_file"
+      echo "      retries: 3" >> "$output_file"
+      echo "      start_period: 60s" >> "$output_file"
+    fi
+  fi
 }
 
 # Helper function to add environment variables to compose file
@@ -330,6 +451,9 @@ uds_pull_docker_images() {
   if [[ "$images" == *","* ]]; then
     IFS=',' read -ra IMAGES_ARRAY <<< "$images"
     
+    local success_count=0
+    local total_images=${#IMAGES_ARRAY[@]}
+    
     for img in "${IMAGES_ARRAY[@]}"; do
       local img_clean=$(echo "$img" | tr -d ' ')
       
@@ -341,50 +465,88 @@ uds_pull_docker_images() {
       local pull_success=false
       
       while [ $attempts -lt $max_attempts ] && [ "$pull_success" = "false" ]; do
-        if docker pull "$img_clean:$tag"; then
+        local pull_output=""
+        if pull_output=$(docker pull "$img_clean:$tag" 2>&1); then
           pull_success=true
+          success_count=$((success_count + 1))
         else
           attempts=$((attempts + 1))
+          local error_message=$(echo "$pull_output" | grep -i "error" | head -n 1)
+          
           if [ $attempts -lt $max_attempts ]; then
-            uds_log "Pull failed, retrying ($attempts/$max_attempts)..." "warning"
-            sleep 3
+            if echo "$pull_output" | grep -q "connection refused"; then
+              uds_log "Docker daemon connection refused, retrying in 5s..." "warning"
+              sleep 5
+            elif echo "$pull_output" | grep -q "not found"; then
+              uds_log "Image '$img_clean:$tag' not found in registry" "error"
+              break
+            else
+              uds_log "Pull failed ($error_message), retrying ($attempts/$max_attempts)..." "warning"
+              sleep 3
+            fi
           fi
         fi
       done
       
       if [ "$pull_success" = "false" ]; then
-        uds_log "Failed to pull image $img_clean:$tag after $max_attempts attempts" "error"
-        return 1
+        uds_log "Failed to pull image $img_clean:$tag after $max_attempts attempts: $error_message" "error"
+        # Continue with other images rather than failing completely
       fi
     done
+    
+    # Check if we pulled at least one image successfully
+    if [ $success_count -eq 0 ]; then
+      uds_log "Failed to pull any images" "error"
+      return 1
+    elif [ $success_count -lt $total_images ]; then
+      uds_log "Warning: Only pulled $success_count of $total_images images" "warning"
+      return 0
+    fi
   else
     # Single image
+    if [ -z "$images" ]; then
+      uds_log "No image specified, skipping pull" "warning"
+      return 0
+    fi
+    
     uds_log "Pulling image: $images:$tag" "info"
     
     # Pull with retry logic
     local attempts=0
     local max_attempts=3
     local pull_success=false
+    local error_message=""
     
     while [ $attempts -lt $max_attempts ] && [ "$pull_success" = "false" ]; do
-      if docker pull "$images:$tag"; then
+      local pull_output=""
+      if pull_output=$(docker pull "$images:$tag" 2>&1); then
         pull_success=true
       else
         attempts=$((attempts + 1))
+        error_message=$(echo "$pull_output" | grep -i "error" | head -n 1)
+        
         if [ $attempts -lt $max_attempts ]; then
-          uds_log "Pull failed, retrying ($attempts/$max_attempts)..." "warning"
-          sleep 3
+          if echo "$pull_output" | grep -q "connection refused"; then
+            uds_log "Docker daemon connection refused, retrying in 5s..." "warning"
+            sleep 5
+          elif echo "$pull_output" | grep -q "not found"; then
+            uds_log "Image '$images:$tag' not found in registry" "error"
+            break
+          else
+            uds_log "Pull failed ($error_message), retrying ($attempts/$max_attempts)..." "warning"
+            sleep 3
+          fi
         fi
       fi
     done
     
     if [ "$pull_success" = "false" ]; then
-      uds_log "Failed to pull image $images:$tag after $max_attempts attempts" "error"
+      uds_log "Failed to pull image $images:$tag after $max_attempts attempts: $error_message" "error"
       return 1
     fi
   fi
   
-  uds_log "All images pulled successfully" "success"
+  uds_log "Image pull completed successfully" "success"
   return 0
 }
 
@@ -414,25 +576,42 @@ uds_get_container_health() {
     return 1
   fi
   
-  # Get health status
+  # Get container status first
+  local container_status=$(docker inspect --format='{{.State.Status}}' "$container_name" 2>/dev/null)
+  
+  # If container is not running, return stopped status
+  if [ "$container_status" != "running" ]; then
+    echo "stopped"
+    return 0
+  fi
+  
+  # Get health status if container is running
   local health_status
   health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null)
   
   # If health check is not configured, check if container is running
   if [ "$health_status" = "none" ]; then
-    local is_running
-    is_running=$(docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null)
-    
-    if [ "$is_running" = "true" ]; then
-      echo "running"
-    else
-      echo "stopped"
-    fi
+    echo "running"
   else
     echo "$health_status"
   fi
   
   return 0
+}
+
+# Get detailed container information
+uds_get_container_info() {
+  local container_name="$1"
+  
+  # Check if container exists
+  if ! docker ps -a -q --filter "name=$container_name" | grep -q .; then
+    uds_log "Container $container_name not found" "warning"
+    return 1
+  fi
+  
+  # Get container information in JSON format
+  docker inspect "$container_name" 2>/dev/null
+  return $?
 }
 
 # Execute command in container with error handling
@@ -464,7 +643,81 @@ uds_exec_container() {
   return 0
 }
 
+# Start a stopped container with retry logic
+uds_start_container() {
+  local container_name="$1"
+  local max_attempts="${2:-3}"
+  
+  # Check if container exists
+  if ! docker ps -a -q --filter "name=$container_name" | grep -q .; then
+    uds_log "Container $container_name not found" "error"
+    return 1
+  fi
+  
+  # Check if container is already running
+  if docker ps -q --filter "name=$container_name" | grep -q .; then
+    uds_log "Container $container_name is already running" "info"
+    return 0
+  fi
+  
+  uds_log "Starting container $container_name" "info"
+  
+  local attempts=0
+  local start_success=false
+  
+  while [ $attempts -lt $max_attempts ] && [ "$start_success" = "false" ]; do
+    local start_output=""
+    if start_output=$(docker start "$container_name" 2>&1); then
+      start_success=true
+    else
+      attempts=$((attempts + 1))
+      local error_message=$(echo "$start_output" | grep -i "error" | head -n 1)
+      
+      if [ $attempts -lt $max_attempts ]; then
+        uds_log "Start failed ($error_message), retrying ($attempts/$max_attempts)..." "warning"
+        sleep 3
+      fi
+    fi
+  done
+  
+  if [ "$start_success" = "false" ]; then
+    uds_log "Failed to start container $container_name after $max_attempts attempts" "error"
+    return 1
+  fi
+  
+  uds_log "Container $container_name started successfully" "success"
+  return 0
+}
+
+# Stop a running container with timeout
+uds_stop_container() {
+  local container_name="$1"
+  local timeout="${2:-30}"
+  
+  # Check if container exists and is running
+  if ! docker ps -q --filter "name=$container_name" | grep -q .; then
+    uds_log "Container $container_name is not running" "info"
+    return 0
+  fi
+  
+  uds_log "Stopping container $container_name (timeout: ${timeout}s)" "info"
+  
+  if ! docker stop --time="$timeout" "$container_name" &>/dev/null; then
+    uds_log "Failed to stop container $container_name gracefully, forcing" "warning"
+    
+    # Force kill if graceful stop fails
+    if ! docker kill "$container_name" &>/dev/null; then
+      uds_log "Failed to kill container $container_name" "error"
+      return 1
+    fi
+  fi
+  
+  uds_log "Container $container_name stopped" "success"
+  return 0
+}
+
 # Export functions
 export -f uds_is_port_available uds_find_available_port uds_resolve_port_conflicts
 export -f uds_generate_compose_file uds_pull_docker_images
-export -f uds_get_container_logs uds_get_container_health uds_exec_container
+export -f uds_get_container_logs uds_get_container_health uds_get_container_info
+export -f uds_exec_container uds_start_container uds_stop_container
