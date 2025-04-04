@@ -62,7 +62,7 @@ jobs:
         run: |
           docker run --rm uds-action:test /bin/bash -c "ls -la /opt/uds"
           # Check for critical files
-          docker run --rm uds-action:test /bin/bash -c "test -f /opt/uds/scripts/uds-core.sh && echo 'Core script exists' || echo 'Missing core script'"
+          docker run --rm uds-action:test /bin/bash -c "test -f /opt/uds/scripts/uds-env.sh && echo 'Env script exists' || echo 'Missing env script'"
           docker run --rm uds-action:test /bin/bash -c "test -x /entrypoint.sh && echo 'Entrypoint is executable' || echo 'Entrypoint not executable'"
       
       - name: Run integration test

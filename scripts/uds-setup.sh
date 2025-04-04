@@ -18,7 +18,7 @@ setup_uds() {
   # Create target directory if it doesn't exist
   mkdir -p "$target_dir"
 
-  if [ ! -f "$target_dir/scripts/uds-core.sh" ]; then  # Changed path to look in scripts directory
+  if [ ! -f "$target_dir/scripts/uds-env.sh" ]; then  # Changed path to look for uds-env.sh instead of uds-core.sh
     echo "Installing Unified Deployment System..."
 
     # Create a temporary directory for cloning
@@ -71,20 +71,33 @@ setup_uds() {
   fi
 }
 
-# Load core module if available
-if [ -f "$UDS_BASE_DIR/uds-core.sh" ]; then
-  source "$UDS_BASE_DIR/uds-core.sh"
+# Load essential modules if available, otherwise install them first
+if [ -f "$UDS_BASE_DIR/scripts/uds-env.sh" ]; then
+  source "$UDS_BASE_DIR/scripts/uds-env.sh"
+  source "$UDS_BASE_DIR/scripts/uds-logging.sh"
+  source "$UDS_BASE_DIR/scripts/uds-security.sh"
 else
-  # If core module is not available, install UDS first
+  # If modules are not available, install UDS first
   setup_uds "$UDS_BASE_DIR"
+  
   # Try loading again after installation
-  if [ -f "$UDS_BASE_DIR/uds-core.sh" ]; then
-    source "$UDS_BASE_DIR/uds-core.sh"
+  if [ -f "$UDS_BASE_DIR/scripts/uds-env.sh" ]; then
+    source "$UDS_BASE_DIR/scripts/uds-env.sh"
+    source "$UDS_BASE_DIR/scripts/uds-logging.sh"
+    source "$UDS_BASE_DIR/scripts/uds-security.sh"
   else
-    echo "ERROR: Failed to load or install UDS core module"
+    echo "ERROR: Failed to load or install UDS essential modules"
     exit 1
   fi
 fi
+
+# Load additional required modules
+uds_load_module "uds-plugin.sh"       # For plugin functionality
+uds_load_module "uds-docker.sh"       # For Docker operations
+uds_load_module "uds-service.sh"      # For service registry
+
+# Log execution start
+uds_log "Loading UDS setup modules..." "debug"
 
 # Display help information
 uds_show_help() {
@@ -191,7 +204,70 @@ uds_parse_args() {
   fi
   
   # Export variables for use in other functions
-  export INSTALL_DEPS CHECK_SYSTEM SECURE_MODE DRY_RUN UDS_REPO UDS_VERSION
+  export INSTALL_DEPS CHECK_SYSTEM SECURE_MODE DRY_RUN UDS_REPO UDS_VERSION CONFIG_FILE
+}
+
+# Load configuration from a JSON file
+uds_load_config() {
+  local config_file="$1"
+  
+  if [ ! -f "$config_file" ]; then
+    uds_log "Configuration file not found: $config_file" "error"
+    return 1
+  fi
+  
+  # Validate JSON syntax
+  if ! jq empty "$config_file" 2>/dev/null; then
+    uds_log "Invalid JSON in configuration file" "error"
+    return 1
+  fi
+  
+  uds_log "Loading configuration from $config_file" "info"
+  
+  # Load configuration values
+  APP_NAME=$(jq -r '.app_name // ""' "$config_file")
+  COMMAND=$(jq -r '.command // "deploy"' "$config_file")
+  IMAGE=$(jq -r '.image // ""' "$config_file")
+  TAG=$(jq -r '.tag // "latest"' "$config_file")
+  DOMAIN=$(jq -r '.domain // ""' "$config_file")
+  ROUTE_TYPE=$(jq -r '.route_type // "path"' "$config_file")
+  ROUTE=$(jq -r '.route // ""' "$config_file")
+  PORT=$(jq -r '.port // "3000"' "$config_file")
+  SSL=$(jq -r '.ssl // true' "$config_file")
+  SSL_EMAIL=$(jq -r '.ssl_email // ""' "$config_file")
+  ENV_VARS=$(jq -r '.env_vars // {}' "$config_file")
+  VOLUMES=$(jq -r '.volumes // ""' "$config_file")
+  PERSISTENT=$(jq -r '.persistent // false' "$config_file")
+  COMPOSE_FILE=$(jq -r '.compose_file // ""' "$config_file")
+  USE_PROFILES=$(jq -r '.use_profiles // true' "$config_file")
+  MULTI_STAGE=$(jq -r '.multi_stage // false' "$config_file")
+  CHECK_DEPENDENCIES=$(jq -r '.check_dependencies // false' "$config_file")
+  HEALTH_CHECK=$(jq -r '.health_check // "/health"' "$config_file")
+  HEALTH_CHECK_TYPE=$(jq -r '.health_check_type // "auto"' "$config_file")
+  HEALTH_CHECK_TIMEOUT=$(jq -r '.health_check_timeout // 60' "$config_file")
+  HEALTH_CHECK_COMMAND=$(jq -r '.health_check_command // ""' "$config_file")
+  PORT_AUTO_ASSIGN=$(jq -r '.port_auto_assign // true' "$config_file")
+  VERSION_TRACKING=$(jq -r '.version_tracking // true' "$config_file")
+  PLUGINS=$(jq -r '.plugins // ""' "$config_file")
+  
+  # Set APP_DIR based on APP_NAME
+  APP_DIR="${UDS_BASE_DIR}/${APP_NAME}"
+  
+  # Export variables
+  export APP_NAME COMMAND IMAGE TAG DOMAIN ROUTE_TYPE ROUTE PORT SSL SSL_EMAIL 
+  export VOLUMES PERSISTENT COMPOSE_FILE USE_PROFILES MULTI_STAGE CHECK_DEPENDENCIES
+  export HEALTH_CHECK HEALTH_CHECK_TYPE HEALTH_CHECK_TIMEOUT HEALTH_CHECK_COMMAND 
+  export PORT_AUTO_ASSIGN VERSION_TRACKING APP_DIR PLUGINS
+  
+  # Load and discover plugins
+  uds_discover_plugins
+  
+  # Activate configured plugins
+  if [ -n "$PLUGINS" ]; then
+    uds_activate_plugins "$PLUGINS"
+  fi
+  
+  return 0
 }
 
 # Basic system requirement check (focused on setup concerns only)
