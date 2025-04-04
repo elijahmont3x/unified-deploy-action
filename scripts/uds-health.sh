@@ -609,7 +609,7 @@ uds_check_health() {
   return $check_result
 }
 
-# Enhanced health check with standardized retry logic
+# Enhanced health check with standardized retry logic and improved diagnostics
 uds_health_check_with_retry() {
   local app_name="$1"
   local port="$2"
@@ -635,21 +635,15 @@ uds_health_check_with_retry() {
   # Reset cache for fresh checks
   uds_health_clear_cache
   
-  # Execute health check with retry
-  local result=$(uds_execute_health_check_with_retry "$app_name" "$port" "$health_endpoint" "$max_attempts" "$timeout" "$health_type" "$container_name" "$health_command")
-  return $result
-}
-
-# Helper function for health check execution with retry logic
-uds_execute_health_check_with_retry() {
-  local app_name="$1"
-  local port="$2"
-  local health_endpoint="$3"
-  local max_attempts="$4"
-  local timeout="$5"
-  local health_type="$6"
-  local container_name="$7"
-  local health_command="$8"
+  # Log the health check parameters for diagnostics
+  uds_log "Health check parameters:" "debug"
+  uds_log "  App name: $app_name" "debug"
+  uds_log "  Port: $port" "debug"
+  uds_log "  Endpoint: $health_endpoint" "debug"
+  uds_log "  Type: $health_type" "debug"
+  uds_log "  Container: $container_name" "debug"
+  uds_log "  Max attempts: $max_attempts" "debug"
+  uds_log "  Timeout: $timeout seconds" "debug"
   
   # Calculate timeout budget for each attempt
   local attempt_timeout=$((timeout / max_attempts))
@@ -660,6 +654,7 @@ uds_execute_health_check_with_retry() {
   # Implement standardized retry logic with exponential backoff and jitter
   local attempt=1
   local total_time=0
+  local start_time=$(date +%s)
   
   while [ $attempt -le $max_attempts ]; do
     uds_log "Health check attempt $attempt of $max_attempts (type: $health_type)" "info"
@@ -669,137 +664,140 @@ uds_execute_health_check_with_retry() {
     uds_check_health "$app_name" "$port" "$health_endpoint" "$attempt_timeout" "$health_type" "$container_name" "$health_command" "false"
     check_result=$?
     
-    # Check result and determine action
-    case $check_result in
-      $HEALTH_CHECK_SUCCESS)
-        # Success - exit immediately
-        return 0
-        ;;
-      
-      $HEALTH_CHECK_TIMEOUT)
-        # Timeout - might succeed with more time
-        uds_log "Health check timed out, retrying" "warning"
-        ;;
-      
-      $HEALTH_CHECK_TEMPORARY_FAILURE)
-        # Temporary failure - retry with progressive backoff
-        uds_log "Health check failed temporarily, retrying" "warning"
-        ;;
-      
-      $HEALTH_CHECK_FAILURE)
-        # Permanent failure - return immediately
-        uds_log "Health check failed (unrecoverable error)" "error"
-        
-        # Execute health-check-failed hooks
-        uds_execute_hook "health_check_failed" "$app_name" "$APP_DIR"
-        
-        return 1
-        ;;
-      
-      *)
-        # Unknown result - treat as temporary failure
-        uds_log "Health check returned unknown status: $check_result" "warning"
-        ;;
-    esac
+    local elapsed_time=$(($(date +%s) - start_time))
     
-    # Calculate backoff time and wait
-    if [ $attempt -lt $max_attempts ]; then
-      if ! uds_health_backoff_and_check_timeout "$attempt" "$timeout" "$total_time"; then
-        break
-      fi
-      
-      # Update time spent
-      total_time=$((total_time + attempt_timeout + wait_time))
+    # Check result and determine action
+    if [ $check_result -eq 0 ]; then
+      uds_log "Health check passed after $attempt attempt(s) in ${elapsed_time}s" "success"
+      return 0
     fi
     
+    # If we've hit max attempts, break the loop
+    if [ $attempt -ge $max_attempts ]; then
+      break
+    fi
+    
+    # Calculate backoff time with exponential increase
+    local backoff_time=$(( 2 ** (attempt - 1) * 2 ))
+    
+    # Cap backoff time to avoid excessive waits
+    if [ $backoff_time -gt 30 ]; then
+      backoff_time=30
+    fi
+    
+    # Check if we'd exceed total timeout
+    if [ $((elapsed_time + backoff_time)) -gt $timeout ]; then
+      uds_log "Breaking retry loop as next attempt would exceed timeout" "warning"
+      break
+    fi
+    
+    uds_log "Waiting ${backoff_time}s before retry (attempt ${attempt}/${max_attempts})" "info"
+    sleep $backoff_time
+    
+    # Update attempt counter
     attempt=$((attempt + 1))
   done
+  
+  # If we reached here, all attempts failed
+  uds_log "Health check failed after $max_attempts attempts (${elapsed_time}s elapsed)" "error"
+  
+  # Collect detailed diagnostics on failure
+  uds_health_collect_diagnostics "$app_name" "$container_name" "$health_type" "$port" "$health_endpoint"
   
   # Execute health-check-failed hooks
   uds_execute_hook "health_check_failed" "$app_name" "$APP_DIR"
   
-  uds_log "Health check failed after $max_attempts attempts" "error"
-  
-  # Collect diagnostics on failure
-  uds_health_collect_diagnostics "$app_name" "$container_name" "$health_type"
-  
   return 1
 }
 
-# Helper function for backoff calculation and timeout checking
-uds_health_backoff_and_check_timeout() {
-  local attempt="$1"
-  local timeout="$2"
-  local total_time="$3"
-  
-  local wait_time=$(uds_health_calculate_backoff "$attempt")
-  
-  # Check if we've exceeded total timeout
-  if [ $((total_time + wait_time)) -gt $timeout ]; then
-    uds_log "Health check total timeout exceeded" "warning"
-    return 1
-  fi
-  
-  uds_log "Waiting ${wait_time}s before retry (attempt $attempt)" "info"
-  sleep $wait_time
-  
-  return 0
-}
-
-# Collect diagnostics for failed health checks
+# Enhanced diagnostics collection function
 uds_health_collect_diagnostics() {
   local app_name="$1"
   local container_name="$2"
   local health_type="$3"
+  local port="${4:-}"
+  local health_endpoint="${5:-}"
   
   uds_log "Collecting diagnostics for failed health check of $app_name" "info"
   
-  # Check if container exists and collect logs
-  if docker ps -a -q --filter "name=$container_name" | grep -q .; then
-    uds_log "Container logs for $container_name (last ${MAX_LOG_LINES:-20} lines):" "info"
-    docker logs --tail="${MAX_LOG_LINES:-20}" "$container_name" 2>&1 || true
+  # Check if container exists and is running
+  if docker ps -q --filter "name=$container_name" | grep -q .; then
+    uds_log "Container $container_name is running" "info"
     
-    # Check container status
-    local container_status=$(docker inspect --format='{{.State.Status}}' "$container_name" 2>/dev/null)
-    uds_log "Container status: $container_status" "info"
+    # Get container info
+    docker inspect "$container_name" > "${UDS_LOGS_DIR}/${container_name}_inspect.json" 2>/dev/null || true
     
-    # If container exited, get exit code and capture more extensive logs
-    if [ "$container_status" = "exited" ]; then
-      local exit_code=$(docker inspect --format='{{.State.ExitCode}}' "$container_name" 2>/dev/null)
-      uds_log "Container exit code: $exit_code" "info"
-      
-      # For non-zero exit codes, capture more logs for better diagnostics
-      if [ "$exit_code" != "0" ]; then
-        uds_log "Container log context (last 50 lines):" "info"
-        docker logs --tail=50 "$container_name" 2>&1 || true
-      fi
-    fi
+    # Collect logs
+    uds_log "Container logs for $container_name (last ${MAX_LOG_LINES:-50} lines):" "info"
+    docker logs --tail="${MAX_LOG_LINES:-50}" "$container_name" 2>&1 || true
     
-    # Collect specific diagnostics based on service type
+    # Try to get more detailed info based on health check type
     case "$health_type" in
-      postgres)
-        docker exec "$container_name" pg_isready -v 2>/dev/null || true
+      http)
+        if [ -n "$port" ] && [ -n "$health_endpoint" ]; then
+          uds_log "Attempting direct HTTP request to health endpoint" "debug"
+          if command -v curl &>/dev/null; then
+            curl -v "http://localhost:${port}${health_endpoint}" > "${UDS_LOGS_DIR}/${app_name}_health_curl.log" 2>&1 || true
+            uds_log "HTTP request result saved to ${UDS_LOGS_DIR}/${app_name}_health_curl.log" "info"
+          fi
+        fi
         ;;
       
-      mysql|mariadb)
-        docker exec "$container_name" mysqladmin version 2>/dev/null || true
+      tcp)
+        if [ -n "$port" ]; then
+          # Check if port is actually in use
+          if command -v nc &>/dev/null; then
+            uds_log "Checking if port $port is open" "debug"
+            nc -zv localhost "$port" > "${UDS_LOGS_DIR}/${app_name}_port_check.log" 2>&1 || true
+          fi
+          
+          # Check for processes listening on the port
+          if command -v ss &>/dev/null; then
+            ss -tulpn > "${UDS_LOGS_DIR}/${app_name}_ss.log" 2>/dev/null || true
+          elif command -v netstat &>/dev/null; then
+            netstat -tulpn > "${UDS_LOGS_DIR}/${app_name}_netstat.log" 2>/dev/null || true
+          fi
+        fi
         ;;
       
-      redis)
-        docker exec "$container_name" redis-cli info 2>/dev/null || true
-        ;;
-      
-      elasticsearch)
-        docker exec "$container_name" curl -s http://localhost:9200/_cat/health 2>/dev/null || true
+      container)
+        # Get health status if container has built-in healthcheck
+        local health_status=$(docker inspect --format='{{json .State.Health}}' "$container_name" 2>/dev/null || echo '{"Status":"none"}')
+        echo "$health_status" > "${UDS_LOGS_DIR}/${container_name}_health.json" 2>/dev/null || true
+        
+        # Extract and log latest health check logs
+        if [ "$health_status" != '{"Status":"none"}' ]; then
+          docker inspect --format='{{range .State.Health.Log}}{{println .Output}}{{end}}' "$container_name" > "${UDS_LOGS_DIR}/${container_name}_health_log.txt" 2>/dev/null || true
+          uds_log "Container health check logs saved to ${UDS_LOGS_DIR}/${container_name}_health_log.txt" "info"
+        fi
         ;;
         
-      *)
-        # No additional service-specific diagnostics
+      # Service specific diagnostics
+      postgres|mysql|redis|mongodb)
+        docker exec "$container_name" ps -ef > "${UDS_LOGS_DIR}/${container_name}_processes.log" 2>/dev/null || true
+        uds_log "Checking service process status within container" "debug"
         ;;
     esac
+  elif docker ps -a -q --filter "name=$container_name" | grep -q .; then
+    # Container exists but is not running
+    uds_log "Container $container_name exists but is not running" "warning"
+    local exit_code=$(docker inspect --format='{{.State.ExitCode}}' "$container_name" 2>/dev/null || echo "unknown")
+    uds_log "Container exit code: $exit_code" "info"
+    
+    # Get container logs for non-running container
+    uds_log "Container logs (last ${MAX_LOG_LINES:-50} lines):" "info" 
+    docker logs --tail="${MAX_LOG_LINES:-50}" "$container_name" 2>&1 || true
   else
     uds_log "Container $container_name not found" "warning"
   fi
+  
+  # Check host system resources
+  uds_log "System resource usage:" "info"
+  df -h / > "${UDS_LOGS_DIR}/${app_name}_disk_space.log" 2>/dev/null || true
+  free -m > "${UDS_LOGS_DIR}/${app_name}_memory.log" 2>/dev/null || true
+  
+  uds_log "Diagnostics collection completed" "info"
+  uds_log "All diagnostic logs saved to ${UDS_LOGS_DIR}" "info"
 }
 
 # Export all health check functions
@@ -811,4 +809,3 @@ export -f uds_detect_health_check_from_container uds_detect_health_check_from_im
 export -f uds_health_generate_jitter uds_health_calculate_backoff
 export -f uds_health_get_cache_key uds_health_set_cache uds_health_get_cache
 export -f uds_get_container_health_status uds_evaluate_container_health
-export -f uds_execute_health_check_with_retry uds_health_backoff_and_check_timeout

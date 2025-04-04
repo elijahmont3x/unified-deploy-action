@@ -53,8 +53,32 @@ set_output() {
 # Function to sanitize values for safe use in commands
 sanitize_value() {
   local value="$1"
-  # Remove any characters that could be used for command injection
-  echo "$value" | tr -cd 'a-zA-Z0-9._-/:=' 
+  local allow_extra_chars="${2:-false}"
+  
+  if [ -z "$value" ]; then
+    echo ""
+    return 0
+  fi
+  
+  # Basic alphanumeric and common safe characters
+  local safe_pattern="a-zA-Z0-9._-"
+  
+  # Add additional safe characters if needed (for URLs, paths, etc.)
+  if [ "$allow_extra_chars" = "true" ]; then
+    safe_pattern="${safe_pattern}/:=,"
+  fi
+  
+  # Use parameter expansion to ensure no subshell is created
+  # which prevents command injection attempts
+  local sanitized="${value//[^${safe_pattern}]/}"
+  
+  # Ensure we're not returning an empty string if input wasn't empty
+  if [ -n "$value" ] && [ -z "$sanitized" ]; then
+    echo "invalid_input"
+    return 1
+  fi
+  
+  echo "$sanitized"
 }
 
 # Function to get and sanitize input value

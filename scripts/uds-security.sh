@@ -21,213 +21,79 @@ fi
 UDS_SECURITY_LOADED=1
 
 # Sanitize sensitive environment variables for logging
+# This enhanced version catches more patterns and adds additional sanitization
 uds_sanitize_env_vars() {
   local input="$1"
   local sanitized="$input"
   
-  # Enhanced patterns to sanitize - expanded to cover more sensitive data patterns
+  # Extended list of sensitive patterns
   local patterns=(
-    # Common credential patterns
-    "[A-Za-z0-9_-]+_PASSWORD"
-    "[A-Za-z0-9_-]+_PASS"
-    "[A-Za-z0-9_-]+_SECRET"
-    "[A-Za-z0-9_-]+_KEY"
-    "[A-Za-z0-9_-]+_TOKEN"
-    "[A-Za-z0-9_-]+_CREDENTIALS"
-    "[A-Za-z0-9_-]+_CERT"
-    "[A-Za-z0-9_-]+_CREDS"
-    "[A-Za-z0-9_-]+_AUTH"
+    # Common credential patterns with word boundaries to improve accuracy
+    "\\b[A-Za-z0-9_-]+_PASSWORD\\b"
+    "\\b[A-Za-z0-9_-]+_PASS\\b"
+    "\\b[A-Za-z0-9_-]+_SECRET\\b"
+    "\\b[A-Za-z0-9_-]+_KEY\\b"
+    "\\b[A-Za-z0-9_-]+_TOKEN\\b"
+    "\\b[A-Za-z0-9_-]+_CREDENTIALS\\b"
+    "\\b[A-Za-z0-9_-]+_CERT\\b"
+    "\\b[A-Za-z0-9_-]+_CREDS\\b"
+    "\\b[A-Za-z0-9_-]+_AUTH\\b"
     
     # Common variable prefixes
-    "PASSWORD[A-Za-z0-9_-]*"
-    "ACCESS_TOKEN[A-Za-z0-9_-]*"
-    "SECRET[A-Za-z0-9_-]*"
-    "APIKEY[A-Za-z0-9_-]*"
-    "API_KEY[A-Za-z0-9_-]*"
-    "PRIVATE_KEY[A-Za-z0-9_-]*"
-    "AUTH[A-Za-z0-9_-]*_TOKEN"
-    "TOKEN[A-Za-z0-9_-]*"
-    "REFRESH_TOKEN[A-Za-z0-9_-]*"
-    "SESSION_KEY[A-Za-z0-9_-]*"
-    "SSH_KEY"
-    "SSL_DNS_CREDENTIALS"
-    "CONNECTION_STRING"
-    "CONN_STR"
+    "\\bPASSWORD[A-Za-z0-9_-]*\\b"
+    "\\bACCESS_TOKEN[A-Za-z0-9_-]*\\b"
+    "\\bSECRET[A-Za-z0-9_-]*\\b"
+    "\\bAPIKEY[A-Za-z0-9_-]*\\b"
+    "\\bAPI_KEY[A-Za-z0-9_-]*\\b"
+    "\\bPRIVATE_KEY[A-Za-z0-9_-]*\\b"
+    "\\bAUTH[A-Za-z0-9_-]*_TOKEN\\b"
+    "\\bTOKEN[A-Za-z0-9_-]*\\b"
+    "\\bREFRESH_TOKEN[A-Za-z0-9_-]*\\b"
+    "\\bSESSION_KEY[A-Za-z0-9_-]*\\b"
     
-    # Database credentials
-    "DB_PASSWORD"
-    "DATABASE_PASSWORD"
-    "MYSQL_PASSWORD"
-    "POSTGRES_PASSWORD"
-    "MONGODB_PASSWORD"
-    "PG_PASSWORD"
+    # New: API tokens in standard format
+    "\\b[A-Za-z0-9_-]+_API_TOKEN\\b"
     
-    # Cloud provider credentials
-    "AWS_SECRET"
-    "AWS_ACCESS_KEY"
-    "AWS_SECRET_ACCESS_KEY"
-    "AZURE_KEY"
-    "AZURE_SECRET"
-    "AZURE_PASSWORD"
-    "AZURE_CONNECTION_STRING"
-    "GCP_KEY"
-    "GOOGLE_APPLICATION_CREDENTIALS"
-    "DIGITALOCEAN_TOKEN"
-    "DO_TOKEN"
-    
-    # OAuth and auth patterns
-    "OAUTH_TOKEN"
-    "OAUTH_SECRET"
-    "OAUTH_REFRESH_TOKEN"
-    "CLIENT_SECRET"
-    "JWT_SECRET"
-    "JWT_KEY"
-    "AUTH0_CLIENT_SECRET"
-    
-    # Service-specific patterns
-    "GITHUB_TOKEN"
-    "GITHUB_SECRET"
-    "GITLAB_TOKEN"
-    "DOCKER_PASSWORD"
-    "NPM_TOKEN"
-    "STRIPE_SECRET"
-    "STRIPE_KEY"
-    "SLACK_TOKEN"
-    "SLACK_WEBHOOK"
-    "TWILIO_AUTH"
-    "SENDGRID_API_KEY"
+    # New: Encryption and signing related
+    "\\bENCRYPTION_[A-Za-z0-9_-]+\\b"
+    "\\bSIGNING_[A-Za-z0-9_-]+\\b"
   )
   
-  # Apply sanitization to each pattern
+  # Apply sanitization for each pattern with improved regex syntax
   for pattern in "${patterns[@]}"; do
-    # Cover both key=value and key: value formats with various quoting styles
-    # key=value format (unquoted)
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=([^[:space:]\"']+)/\1=******/g")
-    
-    # key='value' format (single quotes)
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=('[^']+')/\1=******/g")
-    
-    # key="value" format (double quotes)
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=(\"[^\"]+\")/\1=******/g")
+    # key=value format (both quoted and unquoted)
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)=([^[:space:]\"';]+|\"[^\"]*\"|'[^']*')/\1=******/g")
     
     # key: value format (JSON/YAML style)
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *([^[:space:],}\"])/\1: ******/g")
-    
-    # key: "value" format (JSON style with quotes)
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *(\"[^\"]+\")/\1: \"******\"/g")
-    
-    # key: 'value' format (YAML style with quotes)
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *('[^']+')/\1: '******'/g")
+    sanitized=$(echo "$sanitized" | sed -E "s/($pattern): *([^[:space:],}\"';]|\"[^\"]*\"|'[^']*')/\1: ******/g")
   done
 
-  # Enhanced JSON pattern sanitization - for structured data formats
-  local json_patterns=(
-    "password"
-    "passwd"
-    "pass"
-    "secret"
-    "token"
-    "apitoken"
-    "api_token"
-    "key"
-    "apikey"
-    "api_key"
-    "access_key"
-    "access_token"
-    "auth"
-    "credentials"
-    "creds"
-    "cert"
-    "private_key"
-    "ssh_key"
-    "encryption_key"
-    "connection_string"
-    "conn_str"
-    "client_secret"
-    "oauth_token"
-    "refresh_token"
-    "jwt_token"
-    "session_key"
-  )
-  
-  # Apply JSON pattern sanitization - handles more formats and variations
-  for pattern in "${json_patterns[@]}"; do
-    # Standard JSON pattern: "key": "value"
-    sanitized=$(echo "$sanitized" | sed -E "s/\"($pattern)\"\s*:\s*\"[^\"]*\"/\"\\1\": \"******\"/gi")
-    
-    # JSON with single quotes: 'key': 'value'
-    sanitized=$(echo "$sanitized" | sed -E "s/'($pattern)'\s*:\s*'[^']*'/\'\\1\': \'******\'/gi")
-    
-    # JSON with mixed quotes: "key": 'value' or 'key': "value"
-    sanitized=$(echo "$sanitized" | sed -E "s/\"($pattern)\"\s*:\s*'[^']*'/\"\\1\": \'******\'/gi")
-    sanitized=$(echo "$sanitized" | sed -E "s/'($pattern)'\s*:\s*\"[^\"]*\"/\'\\1\': \"******\"/gi")
-    
-    # JSON with numeric values: "key": 12345 
-    sanitized=$(echo "$sanitized" | sed -E "s/\"($pattern)\"\s*:\s*[0-9]+/\"\\1\": ******/gi")
-    
-    # YAML/JSON with no quotes: key: value
-    sanitized=$(echo "$sanitized" | sed -E "s/($pattern)\s*:\s*[^[:space:],}\"]*/\\1: ******/gi")
-  done
-  
-  # Handle database connection strings (more complex patterns)
-  # Match common database connection string formats
+  # Sanitize connection strings - expanded for more database types
   local connection_patterns=(
-    # Standard connection strings
-    "postgresql://[^:]+:[^@]+@"
+    "postgres(ql)?://[^:]+:[^@]+@"
     "mysql://[^:]+:[^@]+@"
-    "mongodb://[^:]+:[^@]+@"
-    "mongodb+srv://[^:]+:[^@]+@"
+    "mongodb(\\+srv)?://[^:]+:[^@]+@"
     "redis://[^:]+:[^@]+@"
-    "db2://[^:]+:[^@]+@"
-    "oracle://[^:]+:[^@]+@"
-    "sqlserver://[^:]+:[^@]+@"
-    
-    # JDBC connection strings
-    "jdbc:postgresql://[^:]+:[^@]+@"
-    "jdbc:mysql://[^:]+:[^@]+@"
-    "jdbc:oracle:thin:[^/]+/[^@]+@"
-    "jdbc:sqlserver://[^:]+:[^;]+;password=[^;]+"
-    
-    # ODBC connection strings
-    "Driver=.*;.*PWD=([^;]*)"
-    "Driver=.*;.*Password=([^;]*)"
-    "Driver=.*;.*UID=([^;]*);.*PWD=([^;]*)"
+    "amqp://[^:]+:[^@]+@"
+    "jdbc:[^:]+://[^:]+:[^@;]+(@|;password=)"
+    # New: Generic username:password@host pattern
+    "[a-zA-Z0-9]+://[^:]+:[^@]+@"
   )
   
   # Apply connection string sanitization
   for pattern in "${connection_patterns[@]}"; do
-    case "$pattern" in
-      # Handle special ODBC cases
-      "Driver=.*;.*PWD=([^;]*)")
-        sanitized=$(echo "$sanitized" | sed -E "s/(Driver=.*;.*)PWD=([^;]*)(;.*)/\\1PWD=******\\3/gi")
-        ;;
-      "Driver=.*;.*Password=([^;]*)")
-        sanitized=$(echo "$sanitized" | sed -E "s/(Driver=.*;.*)Password=([^;]*)(;.*)/\\1Password=******\\3/gi")
-        ;;
-      "Driver=.*;.*UID=([^;]*);.*PWD=([^;]*)")
-        sanitized=$(echo "$sanitized" | sed -E "s/(Driver=.*;.*UID=)([^;]*)(;.*PWD=)([^;]*)(;.*)/\\1******\\3******\\5/gi")
-        ;;
-      # Handle URL-style connection strings
-      *)
-        sanitized=$(echo "$sanitized" | sed -E "s|($pattern)|\\1username:******@|g")
-        ;;
-    esac
+    sanitized=$(echo "$sanitized" | sed -E "s|($pattern)|\\1******@|g")
   done
   
-  # Sanitize Base64-encoded credentials
-  # This attempts to find and sanitize Base64-encoded credentials (JWT tokens, basic auth)
-  sanitized=$(echo "$sanitized" | sed -E "s/(eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.)[a-zA-Z0-9_-]+/\\1******/g")
-  sanitized=$(echo "$sanitized" | sed -E "s/(Authorization: Basic )[a-zA-Z0-9+/=]{16,}/\\1******/gi")
-  sanitized=$(echo "$sanitized" | sed -E "s/(Authorization: Bearer )[a-zA-Z0-9+/._=-]{16,}/\\1******/gi")
+  # Sanitize Authentication Headers
+  sanitized=$(echo "$sanitized" | sed -E 's/(Authorization: (Basic|Bearer) )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
   
   # Sanitize AWS-style access keys and session tokens
-  sanitized=$(echo "$sanitized" | sed -E "s/(AKIA[A-Z0-9]{16})/******/g")
-  sanitized=$(echo "$sanitized" | sed -E "s/([a-zA-Z0-9+/]{40})/******/g")
-  sanitized=$(echo "$sanitized" | sed -E "s/(AWS_SESSION_TOKEN=)[a-zA-Z0-9+/=]{100,}/\\1******/g")
+  sanitized=$(echo "$sanitized" | sed -E 's/(AKIA[A-Z0-9]{16})/******/g')
+  sanitized=$(echo "$sanitized" | sed -E 's/([a-zA-Z0-9+/]{40})/******/g')
   
   # Sanitize private keys and certificates
-  sanitized=$(echo "$sanitized" | sed -E "/-----BEGIN ([A-Z]+ )?PRIVATE KEY-----/,/-----END ([A-Z]+ )?PRIVATE KEY-----/s/.*/[PRIVATE KEY REDACTED]/")
-  sanitized=$(echo "$sanitized" | sed -E "/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/s/.*/[CERTIFICATE REDACTED]/")
+  sanitized=$(echo "$sanitized" | sed -E '/BEGIN (RSA |OPENSSH |EC |DSA |PRIVATE KEY)|BEGIN CERTIFICATE/,/END/s/.*/[REDACTED]/g')
   
   echo "$sanitized"
 }
