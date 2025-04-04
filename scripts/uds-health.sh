@@ -66,47 +66,17 @@ uds_detect_health_check_type() {
   if [ "$health_endpoint" = "auto" ] || [ -z "$health_endpoint" ]; then
     uds_log "Automatically detecting health check type for $app_name" "debug"
     
-    # Get lowercase image name for more accurate detection
-    local image_lower=$(echo "$image" | tr '[:upper:]' '[:lower:]')
+    # First check for container-defined health
+    local check_type=$(uds_detect_health_check_from_container "$app_name" "$image")
     
-    # Get container name
-    local container_name="${app_name}-app"
-    
-    # First try to detect from Docker labels if container exists
-    if docker ps -q --filter "name=$container_name" | grep -q .; then
-      # Check for health check label
-      local health_label=$(docker inspect --format='{{index .Config.Labels "uds.health.type" }}' "$container_name" 2>/dev/null)
-      
-      if [ -n "$health_label" ]; then
-        uds_log "Using health check type from container label: $health_label" "debug"
-        echo "$health_label"
-        return 0
-      fi
-      
-      # Check if container has health check defined
-      if docker inspect --format='{{if .Config.Healthcheck}}true{{else}}false{{end}}' "$container_name" 2>/dev/null | grep -q "true"; then
-        uds_log "Container has built-in health check" "debug"
-        echo "container"
-        return 0
-      fi
+    if [ -n "$check_type" ]; then
+      return 0
     fi
     
     # Try to detect from image name if container doesn't exist or has no health check info
-    # Map common database/service images to their health check types
-    local service_types=("redis" "postgres" "mysql" "mariadb" "mongo" "rabbitmq" "kafka" "elasticsearch")
+    check_type=$(uds_detect_health_check_from_image "$image")
     
-    for service in "${service_types[@]}"; do
-      if [[ "$image_lower" == *"$service"* ]]; then
-        uds_log "Detected $service image, using $service health check" "debug"
-        echo "$service"
-        return 0
-      fi
-    done
-    
-    # Check for web server images
-    if [[ "$image_lower" == *"nginx"* ]] || [[ "$image_lower" == *"httpd"* ]] || [[ "$image_lower" == *"caddy"* ]]; then
-      uds_log "Detected web server image, using http health check" "debug"
-      echo "http"
+    if [ -n "$check_type" ]; then
       return 0
     fi
     
@@ -124,6 +94,64 @@ uds_detect_health_check_type() {
     fi
     return 0
   fi
+}
+
+# Detect health check from container configuration
+uds_detect_health_check_from_container() {
+  local app_name="$1"
+  local image="$2"
+  
+  # Get container name
+  local container_name="${app_name}-app"
+  
+  # Check if container exists
+  if docker ps -q --filter "name=$container_name" | grep -q .; then
+    # Check for health check label
+    local health_label=$(docker inspect --format='{{index .Config.Labels "uds.health.type" }}' "$container_name" 2>/dev/null)
+    
+    if [ -n "$health_label" ]; then
+      uds_log "Using health check type from container label: $health_label" "debug"
+      echo "$health_label"
+      return 0
+    fi
+    
+    # Check if container has health check defined
+    if docker inspect --format='{{if .Config.Healthcheck}}true{{else}}false{{end}}' "$container_name" 2>/dev/null | grep -q "true"; then
+      uds_log "Container has built-in health check" "debug"
+      echo "container"
+      return 0
+    fi
+  fi
+  
+  return 1
+}
+
+# Detect health check from image name
+uds_detect_health_check_from_image() {
+  local image="$1"
+  
+  # Get lowercase image name for more accurate detection
+  local image_lower=$(echo "$image" | tr '[:upper:]' '[:lower:]')
+  
+  # Map common database/service images to their health check types
+  local service_types=("redis" "postgres" "mysql" "mariadb" "mongo" "rabbitmq" "kafka" "elasticsearch")
+  
+  for service in "${service_types[@]}"; do
+    if [[ "$image_lower" == *"$service"* ]]; then
+      uds_log "Detected $service image, using $service health check" "debug"
+      echo "$service"
+      return 0
+    fi
+  done
+  
+  # Check for web server images
+  if [[ "$image_lower" == *"nginx"* ]] || [[ "$image_lower" == *"httpd"* ]] || [[ "$image_lower" == *"caddy"* ]]; then
+    uds_log "Detected web server image, using http health check" "debug"
+    echo "http"
+    return 0
+  fi
+  
+  return 1
 }
 
 # Generate jitter for retry backoff
@@ -239,62 +267,6 @@ uds_health_get_cache() {
   return 1
 }
 
-# Unified service health check implementation
-uds_service_health_check() {
-  local app_name="$1"
-  local service_type="$2"
-  local container_name="$3"
-  local port="${4:-}"
-  local timeout="$5"
-  
-  uds_log "Service health check for $service_type: $container_name" "debug"
-  
-  local start_time=$(date +%s)
-  local end_time=$((start_time + timeout))
-  local current_time=$start_time
-  
-  # Get appropriate check command for this service type
-  local check_command="${SERVICE_CHECK_COMMANDS["$service_type"]}"
-  local success_pattern="${SERVICE_SUCCESS_PATTERNS["$service_type"]}"
-  
-  if [ -z "$check_command" ]; then
-    uds_log "No check command defined for $service_type" "warning"
-    return $HEALTH_CHECK_FAILURE
-  }
-  
-  while [ $current_time -lt $end_time ]; do
-    # Check if container is running
-    if ! docker ps -q --filter "name=$container_name" | grep -q .; then
-      sleep 2
-      current_time=$(date +%s)
-      continue
-    }
-    
-    # Try to execute the check command
-    local check_result
-    
-    if [ -n "$success_pattern" ]; then
-      # When a success pattern is defined, check for that pattern
-      if docker exec "$container_name" sh -c "$check_command" 2>/dev/null | grep -q "$success_pattern"; then
-        uds_log "$service_type health check passed for $app_name" "success"
-        return $HEALTH_CHECK_SUCCESS
-      fi
-    else
-      # When no pattern is defined, rely on the command exit code
-      if docker exec "$container_name" sh -c "$check_command" 2>/dev/null; then
-        uds_log "$service_type health check passed for $app_name" "success"
-        return $HEALTH_CHECK_SUCCESS
-      fi
-    fi
-    
-    sleep 2
-    current_time=$(date +%s)
-  done
-  
-  uds_log "$service_type health check timed out for $app_name after ${timeout}s" "error"
-  return $HEALTH_CHECK_TIMEOUT
-}
-
 # HTTP health check implementation
 uds_http_health_check() {
   local app_name="$1"
@@ -389,46 +361,73 @@ uds_container_health_check() {
       continue
     fi
     
-    # If container has health check, verify it
-    local health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null)
+    # Check container's health status
+    local container_status=$(uds_get_container_health_status "$container_name")
+    local check_result=$(uds_evaluate_container_health "$container_name" "$container_status")
     
-    if [ "$health_status" = "healthy" ]; then
-      uds_log "Container health check passed for $app_name (container reports healthy)" "success"
+    if [ "$check_result" -eq $HEALTH_CHECK_SUCCESS ]; then
       return $HEALTH_CHECK_SUCCESS
-    elif [ "$health_status" = "starting" ]; then
-      # Container is still starting - continue waiting
-      sleep 2
-    elif [ "$health_status" = "none" ] || [ -z "$health_status" ]; then
-      # No health check, check if running is enough
-      if docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
-        uds_log "Container health check passed for $app_name (container is running)" "success"
-        return $HEALTH_CHECK_SUCCESS
-      else
-        uds_log "Container is not running" "error"
-        return $HEALTH_CHECK_FAILURE
-      fi
-    else
-      # Unhealthy or unknown status
-      local health_log=""
-      health_log=$(docker inspect --format='{{if .State.Health}}{{range $i, $h := .State.Health.Log}}{{if eq $i 0}}{{$h.Output}}{{end}}{{end}}{{end}}' "$container_name" 2>/dev/null)
-      
-      if [ -n "$health_log" ]; then
-        uds_log "Container health status: $health_status - ${health_log:0:100}..." "warning"
-      else
-        uds_log "Container health status: $health_status" "warning"
-      fi
-      
-      # Check if container is unhealthy (unrecoverable) or just not ready yet
-      if [ "$health_status" = "unhealthy" ]; then
-        return $HEALTH_CHECK_FAILURE
-      fi
+    elif [ "$check_result" -eq $HEALTH_CHECK_FAILURE ]; then
+      return $HEALTH_CHECK_FAILURE
     fi
     
+    # If still waiting, continue
+    sleep 2
     current_time=$(date +%s)
   done
   
   uds_log "Container health check timed out for $app_name after ${timeout}s" "error"
   return $HEALTH_CHECK_TIMEOUT
+}
+
+# Get container health status
+uds_get_container_health_status() {
+  local container_name="$1"
+  
+  # If container has health check, verify it
+  local health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null)
+  
+  echo "$health_status"
+}
+
+# Evaluate container health status
+uds_evaluate_container_health() {
+  local container_name="$1"
+  local health_status="$2"
+  
+  if [ "$health_status" = "healthy" ]; then
+    uds_log "Container health check passed for container (container reports healthy)" "success"
+    return $HEALTH_CHECK_SUCCESS
+  elif [ "$health_status" = "starting" ]; then
+    # Container is still starting - continue waiting
+    return $HEALTH_CHECK_TEMPORARY_FAILURE
+  elif [ "$health_status" = "none" ] || [ -z "$health_status" ]; then
+    # No health check, check if running is enough
+    if docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
+      uds_log "Container health check passed (container is running)" "success"
+      return $HEALTH_CHECK_SUCCESS
+    else
+      uds_log "Container is not running" "error"
+      return $HEALTH_CHECK_FAILURE
+    fi
+  else
+    # Unhealthy or unknown status
+    local health_log=""
+    health_log=$(docker inspect --format='{{if .State.Health}}{{range $i, $h := .State.Health.Log}}{{if eq $i 0}}{{$h.Output}}{{end}}{{end}}{{end}}' "$container_name" 2>/dev/null)
+    
+    if [ -n "$health_log" ]; then
+      uds_log "Container health status: $health_status - ${health_log:0:100}..." "warning"
+    else
+      uds_log "Container health status: $health_status" "warning"
+    fi
+    
+    # Check if container is unhealthy (unrecoverable) or just not ready yet
+    if [ "$health_status" = "unhealthy" ]; then
+      return $HEALTH_CHECK_FAILURE
+    fi
+  fi
+  
+  return $HEALTH_CHECK_TEMPORARY_FAILURE
 }
 
 # Command health check implementation
@@ -459,6 +458,62 @@ uds_command_health_check() {
   done
   
   uds_log "Command health check timed out for $app_name after ${timeout}s" "error"
+  return $HEALTH_CHECK_TIMEOUT
+}
+
+# Unified service health check implementation
+uds_service_health_check() {
+  local app_name="$1"
+  local service_type="$2"
+  local container_name="$3"
+  local port="${4:-}"
+  local timeout="$5"
+  
+  uds_log "Service health check for $service_type: $container_name" "debug"
+  
+  local start_time=$(date +%s)
+  local end_time=$((start_time + timeout))
+  local current_time=$start_time
+  
+  # Get appropriate check command for this service type
+  local check_command="${SERVICE_CHECK_COMMANDS["$service_type"]}"
+  local success_pattern="${SERVICE_SUCCESS_PATTERNS["$service_type"]}"
+  
+  if [ -z "$check_command" ]; then
+    uds_log "No check command defined for $service_type" "warning"
+    return $HEALTH_CHECK_FAILURE
+  }
+  
+  while [ $current_time -lt $end_time ]; do
+    # Check if container is running
+    if ! docker ps -q --filter "name=$container_name" | grep -q .; then
+      sleep 2
+      current_time=$(date +%s)
+      continue
+    }
+    
+    # Try to execute the check command
+    local check_result
+    
+    if [ -n "$success_pattern" ]; then
+      # When a success pattern is defined, check for that pattern
+      if docker exec "$container_name" sh -c "$check_command" 2>/dev/null | grep -q "$success_pattern"; then
+        uds_log "$service_type health check passed for $app_name" "success"
+        return $HEALTH_CHECK_SUCCESS
+      fi
+    else
+      # When no pattern is defined, rely on the command exit code
+      if docker exec "$container_name" sh -c "$check_command" 2>/dev/null; then
+        uds_log "$service_type health check passed for $app_name" "success"
+        return $HEALTH_CHECK_SUCCESS
+      fi
+    fi
+    
+    sleep 2
+    current_time=$(date +%s)
+  done
+  
+  uds_log "$service_type health check timed out for $app_name after ${timeout}s" "error"
   return $HEALTH_CHECK_TIMEOUT
 }
 
@@ -580,6 +635,22 @@ uds_health_check_with_retry() {
   # Reset cache for fresh checks
   uds_health_clear_cache
   
+  # Execute health check with retry
+  local result=$(uds_execute_health_check_with_retry "$app_name" "$port" "$health_endpoint" "$max_attempts" "$timeout" "$health_type" "$container_name" "$health_command")
+  return $result
+}
+
+# Helper function for health check execution with retry logic
+uds_execute_health_check_with_retry() {
+  local app_name="$1"
+  local port="$2"
+  local health_endpoint="$3"
+  local max_attempts="$4"
+  local timeout="$5"
+  local health_type="$6"
+  local container_name="$7"
+  local health_command="$8"
+  
   # Calculate timeout budget for each attempt
   local attempt_timeout=$((timeout / max_attempts))
   if [ $attempt_timeout -lt 10 ]; then
@@ -631,21 +702,14 @@ uds_health_check_with_retry() {
         ;;
     esac
     
-    # Calculate backoff time
+    # Calculate backoff time and wait
     if [ $attempt -lt $max_attempts ]; then
-      local wait_time=$(uds_health_calculate_backoff "$attempt")
-      
-      # Check if we've exceeded total timeout
-      total_time=$((total_time + attempt_timeout))
-      if [ $((total_time + wait_time)) -gt $timeout ]; then
-        uds_log "Health check total timeout exceeded" "warning"
+      if ! uds_health_backoff_and_check_timeout "$attempt" "$timeout" "$total_time"; then
         break
       fi
       
-      uds_log "Waiting ${wait_time}s before retry (attempt $attempt of $max_attempts)" "info"
-      sleep $wait_time
-      
-      total_time=$((total_time + wait_time))
+      # Update time spent
+      total_time=$((total_time + attempt_timeout + wait_time))
     fi
     
     attempt=$((attempt + 1))
@@ -660,6 +724,26 @@ uds_health_check_with_retry() {
   uds_health_collect_diagnostics "$app_name" "$container_name" "$health_type"
   
   return 1
+}
+
+# Helper function for backoff calculation and timeout checking
+uds_health_backoff_and_check_timeout() {
+  local attempt="$1"
+  local timeout="$2"
+  local total_time="$3"
+  
+  local wait_time=$(uds_health_calculate_backoff "$attempt")
+  
+  # Check if we've exceeded total timeout
+  if [ $((total_time + wait_time)) -gt $timeout ]; then
+    uds_log "Health check total timeout exceeded" "warning"
+    return 1
+  fi
+  
+  uds_log "Waiting ${wait_time}s before retry (attempt $attempt)" "info"
+  sleep $wait_time
+  
+  return 0
 }
 
 # Collect diagnostics for failed health checks
@@ -721,5 +805,10 @@ uds_health_collect_diagnostics() {
 # Export all health check functions
 export -f uds_detect_health_check_type uds_check_health uds_health_check_with_retry
 export -f uds_health_clear_cache uds_health_collect_diagnostics
-export -f uds_http_health_check uds_tcp_health_check uds_container_health_check
+export -f uds_http_health_check uds_tcp_health_check uds_container_health_check 
 export -f uds_service_health_check uds_command_health_check
+export -f uds_detect_health_check_from_container uds_detect_health_check_from_image
+export -f uds_health_generate_jitter uds_health_calculate_backoff
+export -f uds_health_get_cache_key uds_health_set_cache uds_health_get_cache
+export -f uds_get_container_health_status uds_evaluate_container_health
+export -f uds_execute_health_check_with_retry uds_health_backoff_and_check_timeout
