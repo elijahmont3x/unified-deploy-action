@@ -873,7 +873,7 @@ uds_execute_hook() {
           local attempt=1
           local success=false
           
-          while [ $attempt -le $max_attempts ]; do
+          while [ $attempt -le "$max_attempts" ]; do
             # Only show retry message after first attempt
             if [ $attempt -gt 1 ]; then
               uds_log "Retry $attempt/$max_attempts for hook function: $hook_function" "info"
@@ -887,7 +887,7 @@ uds_execute_hook() {
             else
               local exit_code=$?
               
-              if [ $attempt -lt $max_attempts ]; then
+              if [ $attempt -lt "$max_attempts" ]; then
                 uds_log "Hook function failed with exit code $exit_code, will retry" "warning"
                 sleep 1  # Brief delay before retry
               else
@@ -927,7 +927,7 @@ uds_execute_hook() {
         else
           local exit_code=$?
           
-          if [ $attempt -lt $max_attempts ]; then
+          if [ $attempt -lt "$max_attempts" ]; then
             uds_log "Hook function failed with exit code $exit_code, will retry" "warning"
             sleep 1  # Brief delay before retry
           else
@@ -1024,7 +1024,7 @@ _uds_visualize_plugin_tree() {
   local depth="$4"
   
   # Skip if too deep to prevent huge output
-  if [ $depth -gt 10 ]; then
+  if [ "$depth" -gt 10 ]; then
     echo "${prefix}└── ..."
     return
   fi
