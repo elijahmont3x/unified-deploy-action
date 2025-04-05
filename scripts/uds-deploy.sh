@@ -315,7 +315,7 @@ uds_deploy_application() {
   if [ "${DRY_RUN:-false}" = "true" ]; then
     uds_log "DRY RUN: Would deploy $APP_NAME" "info"
     return 0
-  }
+  fi
   
   # Change to application directory
   cd "$APP_DIR" || {
@@ -352,10 +352,10 @@ uds_deploy_application() {
     if docker ps -a -q --filter "name=${APP_NAME}-" | grep -q .; then
       uds_log "Container logs (last ${MAX_LOG_LINES:-20} lines):" "info"
       uds_get_container_logs "${APP_NAME}-app" "${MAX_LOG_LINES:-20}" || true
-    }
+    fi
     
     return 1
-  fi
+  }
   
   # Check application health if health module is available
   if type uds_health_check_with_retry &>/dev/null; then
@@ -581,7 +581,7 @@ uds_multi_stage_deployment() {
       # Check for Docker containers and logs
       if docker ps -a --filter "name=${APP_NAME}-" | grep -q .; then
         uds_log "Container logs from failed deployment:" "info"
-        docker ps -a --filter "name=${APP_NAME}-" --format "{{.Names}}" | while read container; do
+        docker ps -a --filter "name=${APP_NAME}-" --format "{{.Names}}" | while read -r container; do
           uds_log "--- Logs for $container ---" "info"
           docker logs --tail=50 "$container" 2>&1 || true
           uds_log "--- End logs for $container ---" "info"
@@ -745,7 +745,7 @@ uds_multi_stage_deployment() {
             break
           fi
           
-          if [ $i -eq 5 ]; then
+          if [ "$i" -eq 5 ]; then
             uds_log "Deployment verification failed - basic health check failed after 5 attempts" "error"
             uds_perform_rollback "$original_dir" "$backup_dir" "$APP_NAME"
             return 0  # Return success since rollback handled the failure
@@ -788,8 +788,8 @@ uds_multi_stage_deployment() {
     
     # Store URL in an output file for GitHub Actions if running in that context
     if [ -n "$GITHUB_OUTPUT" ]; then
-      echo "deployment_url=$deployment_url" >> $GITHUB_OUTPUT
-      echo "status=success" >> $GITHUB_OUTPUT
+      echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+      echo "status=success" >> "$GITHUB_OUTPUT"
     fi
   else
     uds_log "Multi-stage deployment completed successfully" "success"
@@ -842,7 +842,7 @@ uds_perform_rollback() {
       uds_log "No docker-compose.yml found, stopping containers directly" "info"
       docker ps -a -q --filter "name=${app_name}-" | xargs docker stop 2>/dev/null || true
       docker ps -a -q --filter "name=${app_name}-" | xargs docker rm -f 2>/dev/null || true
-    }
+    fi
     
     # Move current failing deployment to a timestamped failed directory for diagnosis
     local failed_dir="${original_dir}_failed_$(date +%s)"
@@ -946,7 +946,7 @@ uds_do_deploy() {
         uds_log "Deployment failed" "error"
         return 1
       }
-    }
+    fi
   fi
   
   return 0

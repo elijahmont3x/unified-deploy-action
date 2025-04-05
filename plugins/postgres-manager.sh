@@ -87,8 +87,7 @@ plugin_pg_backup() {
   fi
   
   # Perform the backup
-  PGPASSWORD="${PG_PASSWORD}" pg_dump -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" \
-    -d "${PG_DATABASE}" -f "${backup_file}" || {
+  PGPASSWORD="${PG_PASSWORD}" pg_dump -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DATABASE}" -f "${backup_file}" || {
       uds_log "Database backup failed" "error"
       return 1
     }

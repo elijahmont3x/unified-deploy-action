@@ -196,12 +196,12 @@ uds_cleanup_application() {
       $UDS_DOCKER_COMPOSE_CMD -f "$APP_DIR/docker-compose.yml" down --remove-orphans
     else
       # Fallback to direct container removal
-      docker stop $(docker ps -a -q --filter "name=${APP_NAME}-") 2>/dev/null || true
-      docker rm $(docker ps -a -q --filter "name=${APP_NAME}-") 2>/dev/null || true
+      docker stop "$(docker ps -a -q --filter "name=${APP_NAME}-")" 2>/dev/null || true
+      docker rm "$(docker ps -a -q --filter "name=${APP_NAME}-")" 2>/dev/null || true
     fi
   fi
-  
-  # Check for errors during container cleanup
+
+  Check for errors during container cleanup
   if [ $? -ne 0 ]; then
     uds_log "Warning: Some containers may not have been properly stopped or removed" "warning"
     # Continue anyway 

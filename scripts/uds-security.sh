@@ -380,11 +380,11 @@ uds_generate_secure_token() {
     # If we couldn't get enough characters, try again with a different approach
     if [ ${#token} -lt "$length" ]; then
       # Alternative approach using /dev/urandom and tr
-      token=$(cat /dev/urandom | tr -dc "$chars" | head -c "$length")
+      token=$(< /dev/urandom tr -dc "$chars" | head -c "$length")
     fi
   # Use /dev/urandom as fallback
   elif [ -r "/dev/urandom" ]; then
-    token=$(cat /dev/urandom | tr -dc "$chars" | head -c "$length")
+    token=$(< /dev/urandom tr -dc "$chars" | head -c "$length")
   # Last resort, use $RANDOM bash variable (less secure)
   else
     uds_log "Using fallback method for token generation (less secure)" "warning"
@@ -528,7 +528,7 @@ uds_check_sensitive_permissions() {
       fi
       
       # Check files in directory
-      find "$dir" -type f -name "*.key" -o -name "*.pem" -o -name "*.cert" -o -name "*.p12" -o -name "*.pfx" -o -name "*pass*" 2>/dev/null | while read file; do
+      find "$dir" -type f -name "*.key" -o -name "*.pem" -o -name "*.cert" -o -name "*.p12" -o -name "*.pfx" -o -name "*pass*" 2>/dev/null | while read -r file; do
         local file_perms=$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file" 2>/dev/null)
         
         echo "File: $file - Permissions: $file_perms" >> "$report_file"

@@ -671,7 +671,7 @@ plugin_security_post_deploy() {
   if [ "${SECURITY_FILE_PERMISSIONS}" = "true" ] && [ -d "$app_dir" ]; then
     uds_log "Applying secure permissions to deployment files" "debug"
     uds_secure_permissions "$app_dir" 755
-    find "$app_dir" -type f -name "*.yml" -o -name "*.json" -exec uds_secure_permissions {} 600 \;
+    find "$app_dir" -type f \( -name "*.yml" -o -name "*.json" \) -exec uds_secure_permissions {} 600 \;
     find "$app_dir" -type d -exec uds_secure_permissions {} 755 \;
   fi
   
@@ -690,7 +690,7 @@ plugin_security_pre_cleanup() {
     uds_log "Performing sensitive data cleanup" "debug"
     
     # Find and securely delete files that might contain sensitive data
-    find "$app_dir" -type f -name "*.key" -o -name "*.pem" -o -name "*.env" | while read file; do
+    find "$app_dir" -type f -name "*.key" -o -name "*.pem" -o -name "*.env" | while read -r file; do
       uds_secure_delete "$file"
     done
   fi

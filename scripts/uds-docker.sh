@@ -27,7 +27,7 @@ uds_is_port_available() {
     fi
   # Fallback to direct check
   else
-    if ! (echo >/dev/tcp/$host/$port) 2>/dev/null; then
+    if ! (echo >/dev/tcp/"$host"/"$port") 2>/dev/null; then
       return 0
     else
       return 1
@@ -521,7 +521,7 @@ uds_pull_multiple_images() {
   if [ $success_count -eq 0 ]; then
     uds_log "Failed to pull any images" "error"
     return 1
-  elif [ $success_count -lt $total_images ]; then
+  elif [ $success_count -lt "$total_images" ]; then
     uds_log "Warning: Only pulled $success_count of $total_images images" "warning"
     return 0
   fi
@@ -606,7 +606,7 @@ uds_get_container_logs() {
   fi
   
   # Get logs with specified options
-  docker logs "$container_name" $tail_option $lines 2>&1
+  docker logs "$container_name" "$tail_option" "$lines" 2>&1
 }
 
 # Check container health status
@@ -708,7 +708,7 @@ uds_start_container() {
   local attempts=0
   local start_success=false
   
-  while [ $attempts -lt $max_attempts ] && [ "$start_success" = "false" ]; do
+  while [ $attempts -lt "$max_attempts" ] && [ "$start_success" = "false" ]; do
     local start_output=""
     if start_output=$(docker start "$container_name" 2>&1); then
       start_success=true
@@ -716,7 +716,7 @@ uds_start_container() {
       attempts=$((attempts + 1))
       local error_message=$(echo "$start_output" | grep -i "error" | head -n 1)
       
-      if [ $attempts -lt $max_attempts ]; then
+      if [ $attempts -lt "$max_attempts" ]; then
         uds_log "Start failed ($error_message), retrying ($attempts/$max_attempts)..." "warning"
         sleep 3
       fi

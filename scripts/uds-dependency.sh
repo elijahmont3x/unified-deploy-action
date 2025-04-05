@@ -150,7 +150,7 @@ uds_has_dependency() {
 _uds_check_dependency() {
   local service="$1"
   local dependency="$2"
-  local -n _visited="$3"
+  local -n _visited=$3
   
   # Check if already visited to avoid cycles
   for v in "${_visited[@]}"; do
@@ -273,7 +273,7 @@ uds_check_service_availability() {
   # Check if result is cached and cache is enabled
   if [ "$use_cache" = "true" ] && [ -n "${UDS_DEPENDENCY_HEALTH_CACHE[$service]:-}" ]; then
     uds_log "Using cached health status for $service" "debug"
-    return ${UDS_DEPENDENCY_HEALTH_CACHE[$service]}
+    return "${UDS_DEPENDENCY_HEALTH_CACHE[$service]}"
   fi
   
   uds_log "Checking availability of service: $service (timeout: ${timeout}s)" "info"
@@ -305,7 +305,7 @@ uds_check_service_availability() {
   local check_interval=$wait_between
   local max_interval=15
   
-  while [ $current_time -lt $end_time ]; do
+  while [ "$current_time" -lt $end_time ]; do
     # Use the consolidated health check function if available
     if type uds_check_health &>/dev/null; then
       if uds_check_health "$service" "$port" "$health_check" "$check_interval" "$health_check_type" "${service}-app"; then
@@ -343,14 +343,14 @@ uds_check_service_availability() {
     fi
     
     # Progressive backoff
-    if [ $elapsed -gt 30 ] && [ $check_interval -lt $max_interval ]; then
+    if [ $elapsed -gt 30 ] && [ "$check_interval" -lt $max_interval ]; then
       check_interval=$((check_interval + 2))
       if [ $check_interval -gt $max_interval ]; then
         check_interval=$max_interval
       fi
     fi
     
-    sleep $check_interval
+    sleep "$check_interval"
     current_time=$(date +%s)
   done
   
@@ -454,7 +454,7 @@ uds_wait_for_dependencies() {
         uds_log "Timeout waiting for dependency checks to complete" "warning"
         
         # Kill any remaining background jobs
-        kill $(jobs -p) 2>/dev/null || true
+        kill "$(jobs -p)" 2>/dev/null || true
         break
       fi
       

@@ -58,7 +58,7 @@ EOL
     
     # Redirect HTTP to HTTPS
     location / {
-        return 301 https://$host$request_uri;
+        return 301 https://\$host\$request_uri;
     }
 }
 
@@ -183,7 +183,7 @@ EOL
     
     # Redirect HTTP to HTTPS
     location / {
-        return 301 https://$host$request_uri;
+        return 301 https://\$host\$request_uri;
     }
 }
 

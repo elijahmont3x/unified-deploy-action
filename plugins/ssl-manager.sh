@@ -72,12 +72,12 @@ plugin_ssl_check() {
     uds_log "Certificate files exist, checking validity" "debug"
     
     # Enhanced validity checking with more informative output
-    if ! openssl x509 -checkend $((${SSL_RENEWAL_DAYS} * 86400)) -noout -in "$cert_full_path" &> /dev/null; then
+    if ! openssl x509 -checkend $((SSL_RENEWAL_DAYS * 86400)) -noout -in "$cert_full_path" &> /dev/null; then
       # Get exact expiration date
       local expiry_date=$(openssl x509 -enddate -noout -in "$cert_full_path" | cut -d= -f2)
       local expiry_epoch=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null)
       local current_epoch=$(date +%s)
-      local days_remaining=$(( ($expiry_epoch - $current_epoch) / 86400 ))
+      local days_remaining=$(( (expiry_epoch - current_epoch) / 86400 ))
       
       if [ $days_remaining -lt 0 ]; then
         uds_log "SSL certificate for $server_name has expired ($days_remaining days ago)" "warning"
@@ -338,7 +338,7 @@ subjectAltName = ${subject_alt_name}
 EOL
   
   # Generate key and CSR
-  openssl genrsa -out "${cert_dir}/privkey.pem" ${SSL_RSA_KEY_SIZE} || {
+  openssl genrsa -out "${cert_dir}/privkey.pem" "${SSL_RSA_KEY_SIZE}" || {
     uds_log "Failed to generate RSA key" "error"
     rm -f "$ssl_config"
     return 1

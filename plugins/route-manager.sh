@@ -98,7 +98,7 @@ plugin_route_prepare() {
     # Check if the container exists but is stopped
     if docker ps -a -q --filter "name=${NGINX_CONTAINER}" | grep -q .; then
       uds_log "Starting Nginx proxy container" "info"
-      docker start ${NGINX_CONTAINER}
+      docker start "${NGINX_CONTAINER}"
     else
       # Create Nginx proxy container
       uds_log "Creating Nginx proxy container" "info"
@@ -126,7 +126,7 @@ plugin_route_setup_nginx_container() {
   
   # Run Nginx container
   docker run -d \
-    --name ${NGINX_CONTAINER} \
+    --name "${NGINX_CONTAINER}" \
     --restart unless-stopped \
     -p 80:80 \
     -p 443:443 \
@@ -158,14 +158,14 @@ plugin_route_update_nginx() {
     docker cp "${UDS_CERTS_DIR}/." "${NGINX_CONTAINER}:/etc/nginx/certs/"
     
     # Test Nginx configuration
-    if ! docker exec ${NGINX_CONTAINER} nginx -t &>/dev/null; then
+    if ! docker exec "${NGINX_CONTAINER}" nginx -t &>/dev/null; then
       uds_log "Invalid Nginx configuration!" "error"
-      docker exec ${NGINX_CONTAINER} nginx -t
+      docker exec "${NGINX_CONTAINER}" nginx -t
       return 1
     fi
     
     # Reload Nginx
-    docker exec ${NGINX_CONTAINER} nginx -s reload
+    docker exec "${NGINX_CONTAINER}" nginx -s reload
   else
     uds_log "Nginx container is not running" "warning"
     return 1
@@ -194,7 +194,7 @@ plugin_route_finalize() {
     # Connect to Nginx network if not already connected
     if ! docker network inspect uds-network --format '{{range .Containers}}{{.Name}}{{end}}' | grep -q "${app_container}"; then
       uds_log "Connecting ${app_container} to Nginx network" "info"
-      docker network connect uds-network ${app_container} || true
+      docker network connect uds-network "${app_container}" || true
     fi
   fi
   

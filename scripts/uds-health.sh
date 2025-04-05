@@ -186,7 +186,7 @@ uds_health_calculate_backoff() {
   
   # Calculate exponential backoff
   local exp_backoff=0
-  if [ $attempt -le 1 ]; then
+  if [ "$attempt" -le 1 ]; then
     exp_backoff=$base_wait
   else
     # Use bc for floating point if available
@@ -281,12 +281,12 @@ uds_http_health_check() {
   local end_time=$((start_time + timeout))
   local current_time=$start_time
   
-  while [ $current_time -lt $end_time ]; do
+  while [ "$current_time" -lt $end_time ]; do
     local http_result=$(curl -s -o /dev/null -w "%{http_code}" -m 5 "$http_url" 2>/dev/null)
     
     if [ "$http_result" -ge 200 ] && [ "$http_result" -lt 300 ]; then
       uds_log "HTTP health check passed with status $http_result for $app_name" "success"
-      return $HEALTH_CHECK_SUCCESS
+      return "$HEALTH_CHECK_SUCCESS"
     elif [ "$http_result" -ge 500 ] || [ "$http_result" -eq 0 ]; then
       # Server error or connection error - likely temporary
       local error_message="HTTP error $http_result returned from health check endpoint"
@@ -296,14 +296,14 @@ uds_http_health_check() {
       # Client error or redirect - unlikely to resolve on retry
       local error_message="HTTP status $http_result returned from health check endpoint"
       uds_log "$error_message" "warning"
-      return $HEALTH_CHECK_FAILURE
+      return "$HEALTH_CHECK_FAILURE"
     fi
     
     current_time=$(date +%s)
   done
   
   uds_log "HTTP health check timed out for $app_name after ${timeout}s" "error"
-  return $HEALTH_CHECK_TIMEOUT
+  return "$HEALTH_CHECK_TIMEOUT"
 }
 
 # TCP health check implementation
@@ -318,18 +318,18 @@ uds_tcp_health_check() {
   local end_time=$((start_time + timeout))
   local current_time=$start_time
   
-  while [ $current_time -lt $end_time ]; do
+  while [ "$current_time" -lt $end_time ]; do
     # Use netcat if available, otherwise try /dev/tcp
     if command -v nc &>/dev/null; then
       if timeout 5 nc -z localhost "$port" 2>/dev/null; then
         uds_log "TCP health check passed for $app_name (port $port is open)" "success"
-        return $HEALTH_CHECK_SUCCESS
+        return "$HEALTH_CHECK_SUCCESS"
       fi
     else
       # Fallback to bash built-in /dev/tcp
       if timeout 5 bash -c "< /dev/tcp/localhost/$port" 2>/dev/null; then
         uds_log "TCP health check passed for $app_name (port $port is open)" "success"
-        return $HEALTH_CHECK_SUCCESS
+        return "$HEALTH_CHECK_SUCCESS"
       fi
     fi
     
@@ -338,7 +338,7 @@ uds_tcp_health_check() {
   done
   
   uds_log "TCP health check timed out for $app_name after ${timeout}s" "error"
-  return $HEALTH_CHECK_TIMEOUT
+  return "$HEALTH_CHECK_TIMEOUT"
 }
 
 # Container health check implementation
@@ -353,7 +353,7 @@ uds_container_health_check() {
   local end_time=$((start_time + timeout))
   local current_time=$start_time
   
-  while [ $current_time -lt $end_time ]; do
+  while [ "$current_time" -lt $end_time ]; do
     # Check if container is running
     if ! docker ps -q --filter "name=$container_name" | grep -q .; then
       sleep 2
@@ -365,10 +365,10 @@ uds_container_health_check() {
     local container_status=$(uds_get_container_health_status "$container_name")
     local check_result=$(uds_evaluate_container_health "$container_name" "$container_status")
     
-    if [ "$check_result" -eq $HEALTH_CHECK_SUCCESS ]; then
-      return $HEALTH_CHECK_SUCCESS
-    elif [ "$check_result" -eq $HEALTH_CHECK_FAILURE ]; then
-      return $HEALTH_CHECK_FAILURE
+    if [ "$check_result" -eq "$HEALTH_CHECK_SUCCESS" ]; then
+      return "$HEALTH_CHECK_SUCCESS"
+    elif [ "$check_result" -eq "$HEALTH_CHECK_FAILURE" ]; then
+      return "$HEALTH_CHECK_FAILURE"
     fi
     
     # If still waiting, continue
@@ -377,7 +377,7 @@ uds_container_health_check() {
   done
   
   uds_log "Container health check timed out for $app_name after ${timeout}s" "error"
-  return $HEALTH_CHECK_TIMEOUT
+  return "$HEALTH_CHECK_TIMEOUT"
 }
 
 # Get container health status
@@ -397,18 +397,18 @@ uds_evaluate_container_health() {
   
   if [ "$health_status" = "healthy" ]; then
     uds_log "Container health check passed for container (container reports healthy)" "success"
-    return $HEALTH_CHECK_SUCCESS
+    return "$HEALTH_CHECK_SUCCESS"
   elif [ "$health_status" = "starting" ]; then
     # Container is still starting - continue waiting
-    return $HEALTH_CHECK_TEMPORARY_FAILURE
+    return "$HEALTH_CHECK_TEMPORARY_FAILURE"
   elif [ "$health_status" = "none" ] || [ -z "$health_status" ]; then
     # No health check, check if running is enough
     if docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
       uds_log "Container health check passed (container is running)" "success"
-      return $HEALTH_CHECK_SUCCESS
+      return "$HEALTH_CHECK_SUCCESS"
     else
       uds_log "Container is not running" "error"
-      return $HEALTH_CHECK_FAILURE
+      return "$HEALTH_CHECK_FAILURE"
     fi
   else
     # Unhealthy or unknown status
@@ -423,11 +423,11 @@ uds_evaluate_container_health() {
     
     # Check if container is unhealthy (unrecoverable) or just not ready yet
     if [ "$health_status" = "unhealthy" ]; then
-      return $HEALTH_CHECK_FAILURE
+      return "$HEALTH_CHECK_FAILURE"
     fi
   fi
   
-  return $HEALTH_CHECK_TEMPORARY_FAILURE
+  return "$HEALTH_CHECK_TEMPORARY_FAILURE"
 }
 
 # Command health check implementation
@@ -438,7 +438,7 @@ uds_command_health_check() {
   
   if [ -z "$health_command" ]; then
     uds_log "No health command specified" "error"
-    return $HEALTH_CHECK_FAILURE
+    return "$HEALTH_CHECK_FAILURE"
   fi
   
   uds_log "Command health check: $health_command" "debug"
@@ -447,10 +447,10 @@ uds_command_health_check() {
   local end_time=$((start_time + timeout))
   local current_time=$start_time
   
-  while [ $current_time -lt $end_time ]; do
+  while [ "$current_time" -lt $end_time ]; do
     if eval "$health_command"; then
       uds_log "Command health check passed for $app_name" "success"
-      return $HEALTH_CHECK_SUCCESS
+      return "$HEALTH_CHECK_SUCCESS"
     fi
     
     sleep 2
@@ -458,7 +458,7 @@ uds_command_health_check() {
   done
   
   uds_log "Command health check timed out for $app_name after ${timeout}s" "error"
-  return $HEALTH_CHECK_TIMEOUT
+  return "$HEALTH_CHECK_TIMEOUT"
 }
 
 # Unified service health check implementation
@@ -481,10 +481,10 @@ uds_service_health_check() {
   
   if [ -z "$check_command" ]; then
     uds_log "No check command defined for $service_type" "warning"
-    return $HEALTH_CHECK_FAILURE
+    return "$HEALTH_CHECK_FAILURE"
   fi
   
-  while [ $current_time -lt $end_time ]; do
+  while [ "$current_time" -lt $end_time ]; do
     # Check if container is running
     if ! docker ps -q --filter "name=$container_name" | grep -q .; then
       sleep 2
@@ -499,13 +499,13 @@ uds_service_health_check() {
       # When a success pattern is defined, check for that pattern
       if docker exec "$container_name" sh -c "$check_command" 2>/dev/null | grep -q "$success_pattern"; then
         uds_log "$service_type health check passed for $app_name" "success"
-        return $HEALTH_CHECK_SUCCESS
+        return "$HEALTH_CHECK_SUCCESS"
       fi
     else
       # When no pattern is defined, rely on the command exit code
       if docker exec "$container_name" sh -c "$check_command" 2>/dev/null; then
         uds_log "$service_type health check passed for $app_name" "success"
-        return $HEALTH_CHECK_SUCCESS
+        return "$HEALTH_CHECK_SUCCESS"
       fi
     fi
     
@@ -514,7 +514,7 @@ uds_service_health_check() {
   done
   
   uds_log "$service_type health check timed out for $app_name after ${timeout}s" "error"
-  return $HEALTH_CHECK_TIMEOUT
+  return "$HEALTH_CHECK_TIMEOUT"
 }
 
 # Enhanced health check function with more robust handling
@@ -531,7 +531,7 @@ uds_check_health() {
   # Skip health check if explicitly disabled
   if [ "$health_type" = "none" ] || [ "$health_endpoint" = "none" ] || [ "$health_endpoint" = "disabled" ]; then
     uds_log "Health check disabled for $app_name" "info"
-    return $HEALTH_CHECK_SUCCESS
+    return "$HEALTH_CHECK_SUCCESS"
   fi
   
   # Check cache if enabled
@@ -541,7 +541,7 @@ uds_check_health() {
     
     if [ -n "$cached_result" ]; then
       uds_log "Using cached health check result for $app_name (type: $health_type)" "debug"
-      return $cached_result
+      return "$cached_result"
     fi
   fi
   
@@ -656,7 +656,7 @@ uds_health_check_with_retry() {
   local total_time=0
   local start_time=$(date +%s)
   
-  while [ $attempt -le $max_attempts ]; do
+  while [ $attempt -le "$max_attempts" ]; do
     uds_log "Health check attempt $attempt of $max_attempts (type: $health_type)" "info"
     
     # Perform health check
@@ -673,7 +673,7 @@ uds_health_check_with_retry() {
     fi
     
     # If we've hit max attempts, break the loop
-    if [ $attempt -ge $max_attempts ]; then
+    if [ $attempt -ge "$max_attempts" ]; then
       break
     fi
     
@@ -686,7 +686,7 @@ uds_health_check_with_retry() {
     fi
     
     # Check if we'd exceed total timeout
-    if [ $((elapsed_time + backoff_time)) -gt $timeout ]; then
+    if [ $((elapsed_time + backoff_time)) -gt "$timeout" ]; then
       uds_log "Breaking retry loop as next attempt would exceed timeout" "warning"
       break
     fi

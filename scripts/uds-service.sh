@@ -404,7 +404,7 @@ uds_unregister_service() {
     uds_log "Failed to read registry file: $UDS_REGISTRY_FILE" "error"
     uds_registry_release_lock "write"
     return 1
-  }
+  fi
   
   # Check if the service exists
   if ! echo "$registry_data" | jq -e --arg name "$app_name" '.services[$name]' > /dev/null; then
@@ -469,7 +469,7 @@ uds_get_service() {
     uds_log "Failed to read registry file: $UDS_REGISTRY_FILE" "error"
     uds_registry_release_lock "read"
     return 1
-  }
+  fi
   
   # Release lock as early as possible
   uds_registry_release_lock "read"
@@ -510,7 +510,7 @@ uds_list_services() {
     uds_log "Failed to read registry file: $UDS_REGISTRY_FILE" "error"
     uds_registry_release_lock "read"
     return 1
-  }
+  fi
   
   # Release lock as early as possible
   uds_registry_release_lock "read"

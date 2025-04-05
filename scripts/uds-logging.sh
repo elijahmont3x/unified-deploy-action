@@ -147,13 +147,14 @@ uds_log_progress() {
 uds_spinner() {
   local pid=$1
   local delay=0.1
+  # shellcheck disable=SC1003
   local spinstr='|/-\'
   
   # Hide cursor
   tput civis
   
   # Show spinner while process is running
-  while ps a | awk '{print $1}' | grep -q $pid; do
+  while ps a | awk '{print $1}' | grep -q "$pid"; do
     local temp=${spinstr#?}
     printf " [%c]  " "$spinstr"
     local spinstr=$temp${spinstr%"$temp"}

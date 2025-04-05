@@ -282,7 +282,7 @@ _uds_test_plugin_deps() {
   _path["$plugin"]=0
   
   # Remove from stack (pop the last element)
-  unset _stack[${#_stack[@]}-1]
+  unset "_stack[${#_stack[@]}-1]"
   
   return 0
 }
@@ -408,7 +408,7 @@ uds_register_plugin_arg() {
   # If the value isn't already set, set it to the default
   if [ -z "${!arg_name+x}" ]; then
     eval "$arg_name=\"$default_value\""
-    export "$arg_name"
+    eval "export $arg_name"
   fi
   
   return 0

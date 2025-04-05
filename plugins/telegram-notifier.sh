@@ -166,7 +166,7 @@ plugin_telegram_send_message() {
   done
   
   # Skip if level is below minimum
-  if [ $current_level_index -lt $min_level_index ]; then
+  if [ "$current_level_index" -lt "$min_level_index" ]; then
     return 0
   fi
   
@@ -208,14 +208,14 @@ plugin_telegram_send_api_message() {
   local max_retries=${TELEGRAM_MAX_RETRIES}
   local retry_delay=${TELEGRAM_RETRY_DELAY}
   
-  while [ $retry_count -lt $max_retries ]; do
+  while [ $retry_count -lt "$max_retries" ]; do
     # Use curl to send the message with better error handling
     local http_code=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
       -d "chat_id=${TELEGRAM_CHAT_ID}" \
       -d "text=${formatted_message}" \
       -d "parse_mode=Markdown" \
       -d "disable_notification=${disable_notification}" \
-      -m ${TELEGRAM_CONNECTION_TIMEOUT} \
+      -m "${TELEGRAM_CONNECTION_TIMEOUT}" \
       -w "%{http_code}" \
       -o "$tmp_response" \
       2>"$tmp_error")
@@ -228,7 +228,7 @@ plugin_telegram_send_api_message() {
     
     # Handle errors
     local error_msg=$(cat "$tmp_error")
-    local api_error=$(cat "$tmp_response" | grep -o '"description":"[^"]*"' | cut -d'"' -f4)
+    local api_error=$(grep -o '"description":"[^"]*"' "$tmp_response" | cut -d'"' -f4)
     
     if [ -n "$api_error" ]; then
       error_msg="API error: $api_error"
@@ -239,7 +239,7 @@ plugin_telegram_send_api_message() {
     # Check if we should retry
     if [ $retry_count -lt $((max_retries-1)) ]; then
       uds_log "Retrying in $retry_delay seconds..." "debug"
-      sleep $retry_delay
+      sleep "$retry_delay"
       
       # Exponential backoff for retries
       retry_delay=$((retry_delay * 2))
@@ -279,12 +279,12 @@ EOF
   local max_retries=${TELEGRAM_MAX_RETRIES}
   local retry_delay=${TELEGRAM_RETRY_DELAY}
   
-  while [ $retry_count -lt $max_retries ]; do
+  while [ $retry_count -lt "$max_retries" ]; do
     # Use curl to send the webhook
     local http_code=$(curl -s -X POST "${TELEGRAM_WEBHOOK_URL}" \
       -H "Content-Type: application/json" \
       -d "$payload" \
-      -m ${TELEGRAM_CONNECTION_TIMEOUT} \
+      -m "${TELEGRAM_CONNECTION_TIMEOUT}" \
       -w "%{http_code}" \
       -o "$tmp_response" \
       2>"$tmp_error")
@@ -303,7 +303,7 @@ EOF
     # Check if we should retry
     if [ $retry_count -lt $((max_retries-1)) ]; then
       uds_log "Retrying in $retry_delay seconds..." "debug"
-      sleep $retry_delay
+      sleep "$retry_delay"
       
       # Exponential backoff for retries
       retry_delay=$((retry_delay * 2))
