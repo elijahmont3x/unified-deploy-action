@@ -386,12 +386,13 @@ cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
 }
 EOL
 
-# Add pre-validation step before the jq validation${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-log "Pre-validating JSON configuration..." "debug"NFIG_FILE}.tmp" "$CONFIG_FILE"
-# Fix common JSON issues - replace empty values with proper defaultsG_FILE}.tmp" "$CONFIG_FILE"
-sed -i 's/: ,/: false,/g' "$CONFIG_FILE"  # Fix empty boolean fields
-sed -i 's/: }/: false}/g' "$CONFIG_FILE"  # Fix last empty boolean field
-sed -i 's/"\([^"]*\)": ""/"\1": null/g' "$CONFIG_FILE"  # Replace empty strings with null
+# Add pre-validation step before the jq validation
+log "Pre-validating JSON configuration..." "debug"
+
+# Fix common JSON issues - replace empty values with proper defaults
+sed 's/: ,/: false,/g' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+sed 's/: }/: false}/g' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+sed 's/"\([^"]*\)": ""/"\1": null/g' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
 # Validate the JSON is correct
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
@@ -454,13 +455,13 @@ if [ "$INPUT_COMMAND" = "setup" ]; then
   exit 0
 fi
 
-# Prepare commands for the remote server
+# Fix path handling in WORKING_DIR 
 WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
 COMMAND="$(get_input "COMMAND" "deploy")"
 
 # Enhanced installation with error handling and progress tracking
 SETUP_CMD="set -e; mkdir -p $WORKING_DIR/configs $WORKING_DIR/scripts $WORKING_DIR/plugins"
-SETUP_CMD+=" && if [ ! -f $WORKING_DIR/uds-deploy.sh ]; then"
+SETUP_CMD+=" && if [ ! -f $WORKING_DIR/scripts/uds-deploy.sh ]; then"
 SETUP_CMD+=" echo 'Installing UDS scripts...';"
 
 # Download with better error handling
@@ -485,10 +486,10 @@ SETUP_CMD+=" find /tmp/uds-extract -name 'plugins' -type d | while read dir; do 
 SETUP_CMD+=" chmod +x $WORKING_DIR/scripts/*.sh $WORKING_DIR/plugins/*.sh 2>/dev/null || true;"
 SETUP_CMD+=" rm -rf /tmp/uds-extract /tmp/uds.tar.gz;"
 SETUP_CMD+=" echo 'UDS installation completed successfully';"
-SETUP_CMD+=" fi;"
+SETUP_CMD+=" fi"  # Removed semicolon here that was causing syntax error
 
-# Create deploy command with better error handling
-DEPLOY_CMD="$SETUP_CMD && mkdir -p $WORKING_DIR/logs && cat > $WORKING_DIR/configs/${APP_NAME}_config.json && cd $WORKING_DIR && ./uds-$COMMAND.sh --config=configs/${APP_NAME}_config.json"
+# Create deploy command with better path handling
+DEPLOY_CMD="$SETUP_CMD && mkdir -p $WORKING_DIR/logs && cat > $WORKING_DIR/configs/${APP_NAME}_config.json && cd $WORKING_DIR && $WORKING_DIR/scripts/uds-$COMMAND.sh --config=configs/${APP_NAME}_config.json"
 
 # Capture deployment output to extract deployment URL and status
 DEPLOY_OUTPUT_FILE=$(mktemp)
