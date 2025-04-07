@@ -105,6 +105,36 @@ uds_sanitize_env_vars() {
     "\\bSTRIPE_[A-Za-z0-9_-]*\\b"
     "\\bSENDGRID_[A-Za-z0-9_-]*\\b"
     "\\bMAILCHIMP_[A-Za-z0-9_-]*\\b"
+    
+    # Additional sensitive patterns (new additions)
+    "\\bAPI_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bCLIENT_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bOAUTH_CLIENT_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bAPP_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bACCESS_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bAUTH_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bJWT_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bENV_SECRET[A-Za-z0-9_-]*\\b"
+    "\\bSECRET_KEY_BASE\\b"
+    "\\bMASTER_KEY\\b"
+    "\\bENCRYPTION_KEY\\b"
+    "\\bSIGNING_SECRET\\b"
+    "\\bACCOUNT_SID\\b"
+    "\\bACCOUNT_KEY\\b"
+    "\\bSOCKET_SECRET\\b"
+    "\\bSLACK_TOKEN\\b"
+    "\\bSLACK_WEBHOOK\\b"
+    "\\bGITHUB_TOKEN\\b"
+    "\\bKEY_PASSPHRASE\\b"
+    "\\bCIRCLE_TOKEN\\b"
+    "\\bNPM_TOKEN\\b"
+    "\\bPIPELINE_TOKEN\\b"
+    "\\bBUILD_TOKEN\\b"
+    "\\bDEPLOY_TOKEN\\b"
+    "\\bRELEASE_TOKEN\\b"
+    "\\bSERVICE_ACCOUNT\\b"
+    "\\bSERVER_KEY\\b"
+    "\\bCONFIG_SECRET\\b"
   )
   
   # Apply sanitization for each pattern with improved regex syntax
@@ -164,6 +194,15 @@ uds_sanitize_env_vars() {
     "api_key=[^&;]+"
     "access_token=[^&;]+"
     "auth_token=[^&;]+"
+    # Additional parameter patterns
+    "client_secret=[^&;]+"
+    "client_id=[^&;]+"
+    "api_secret=[^&;]+"
+    "token=[^&;]+"
+    "key=[^&;]+"
+    "signing_key=[^&;]+"
+    "signing_secret=[^&;]+"
+    "auth_key=[^&;]+"
   )
   
   for pattern in "${password_param_patterns[@]}"; do
@@ -173,6 +212,12 @@ uds_sanitize_env_vars() {
   # Sanitize Authentication Headers
   sanitized=$(echo "$sanitized" | sed -E 's/(Authorization: (Basic|Bearer|Digest|NTLM|Negotiate|OAuth) )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
   sanitized=$(echo "$sanitized" | sed -E 's/(X-Api-Key: )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
+  
+  # Additional headers often containing sensitive data
+  sanitized=$(echo "$sanitized" | sed -E 's/(X-Auth-Token: )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
+  sanitized=$(echo "$sanitized" | sed -E 's/(X-Auth-Key: )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
+  sanitized=$(echo "$sanitized" | sed -E 's/(X-Access-Token: )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
+  sanitized=$(echo "$sanitized" | sed -E 's/(X-Secret-Key: )[a-zA-Z0-9+/._=-]{8,}/\1******/gi')
   
   # Sanitize AWS-style access keys and session tokens
   sanitized=$(echo "$sanitized" | sed -E 's/(AKIA[A-Z0-9]{16})/******/g')
@@ -184,6 +229,11 @@ uds_sanitize_env_vars() {
   # OAuth tokens (typically long random strings)
   sanitized=$(echo "$sanitized" | sed -E 's/ya29\.[a-zA-Z0-9_-]{100,}/******/g')
   sanitized=$(echo "$sanitized" | sed -E 's/gho_[a-zA-Z0-9]{36,}/******/g') # GitHub tokens
+  # Additional token patterns
+  sanitized=$(echo "$sanitized" | sed -E 's/sk_(live|test)_[a-zA-Z0-9]{24,}/******/g') # Stripe tokens
+  sanitized=$(echo "$sanitized" | sed -E 's/sk-[a-zA-Z0-9]{48,}/******/g') # OpenAI API keys
+  sanitized=$(echo "$sanitized" | sed -E 's/xoxb-[0-9]{10,12}-[0-9]{10,12}-[a-zA-Z0-9]{24}/******/g') # Slack bot tokens
+  sanitized=$(echo "$sanitized" | sed -E 's/xoxp-[0-9]{10,12}-[0-9]{10,12}-[0-9]{10,12}-[a-zA-Z0-9]{32}/******/g') # Slack user tokens
   
   # Sanitize private keys, certificates and PEM content
   if [[ "$sanitized" == *"PRIVATE KEY"* ]] || [[ "$sanitized" == *"CERTIFICATE"* ]]; then

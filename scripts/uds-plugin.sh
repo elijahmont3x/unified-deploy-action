@@ -879,7 +879,7 @@ uds_execute_hook() {
               uds_log "Retry $attempt/$max_attempts for hook function: $hook_function" "info"
             fi
             
-            # Execute hook with error handling
+            # Execute hook with improved error handling
             if "$hook_function" "$@"; then
               success=true
               success_hooks=$((success_hooks + 1))
@@ -889,9 +889,13 @@ uds_execute_hook() {
               
               if [ $attempt -lt "$max_attempts" ]; then
                 uds_log "Hook function failed with exit code $exit_code, will retry" "warning"
+                # Log specific error if available
+                if [ -n "${FUNCNAME[0]:-}" ]; then
+                  uds_log "Function call: ${FUNCNAME[0]}:$LINENO in ${BASH_SOURCE[1]:-unknown}" "debug"
+                fi
                 sleep 1  # Brief delay before retry
               else
-                uds_log "Hook function failed after $max_attempts attempts: $hook_function" "error"
+                uds_log "Hook function $hook_function failed after $max_attempts attempts with exit code $exit_code" "error"
                 hook_errors=$((hook_errors + 1))
               fi
             fi
@@ -919,7 +923,7 @@ uds_execute_hook() {
           uds_log "Retry $attempt/$max_attempts for hook function: $hook_function" "info"
         fi
         
-        # Execute hook with error handling
+        # Execute hook with improved error handling
         if "$hook_function" "$@"; then
           success=true
           success_hooks=$((success_hooks + 1))
@@ -929,9 +933,11 @@ uds_execute_hook() {
           
           if [ $attempt -lt "$max_attempts" ]; then
             uds_log "Hook function failed with exit code $exit_code, will retry" "warning"
+            # Log more detailed error information
+            uds_log "Failed function: $hook_function, arguments: $*" "debug"
             sleep 1  # Brief delay before retry
           else
-            uds_log "Hook function failed after $max_attempts attempts: $hook_function" "error"
+            uds_log "Hook function $hook_function failed after $max_attempts attempts with exit code $exit_code" "error"
             hook_errors=$((hook_errors + 1))
           fi
         fi

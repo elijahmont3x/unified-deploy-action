@@ -240,13 +240,13 @@ validate_ssh_key() {
   local key="$1"
   local key_file="$2"
   
-  # Write key to temporary file for validation
-  echo "$key" > "$key_file"
-  
-  # Check if key starts with proper headers for various key types
-  if ! grep -qE '^\-\-\-\-\-BEGIN (RSA|OPENSSH|DSA|EC|PGP) PRIVATE KEY\-\-\-\-\-' "$key_file"; then
+  # Validate SSH key format in memory first
+  if ! echo "$key" | grep -qE '^\-\-\-\-\-BEGIN (RSA|OPENSSH|DSA|EC|PGP) PRIVATE KEY\-\-\-\-\-'; then
     return 1
   fi
+  
+  # Write key to file only after validation
+  echo "$key" > "$key_file"
   
   # Additional validation using ssh-keygen if available
   if command -v ssh-keygen &>/dev/null; then

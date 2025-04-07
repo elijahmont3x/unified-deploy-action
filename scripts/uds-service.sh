@@ -69,7 +69,7 @@ uds_registry_acquire_lock() {
       return 0
     fi
     
-    # Check if lock is stale (older than 5 minutes or from a non-existent process)
+    # Check if lock is stale with enhanced detection
     if [ -d "$lock_file" ]; then
       local is_stale=false
       
@@ -77,13 +77,27 @@ uds_registry_acquire_lock() {
       if [ -f "${lock_file}/info" ]; then
         local lock_info=$(cat "${lock_file}/info" 2>/dev/null || echo "unknown")
         local lock_pid=$(echo "$lock_info" | cut -d':' -f1)
+        local lock_host=$(echo "$lock_info" | cut -d':' -f2)
         local lock_time=$(echo "$lock_info" | cut -d':' -f3)
         local current_time=$(date +%s)
         
-        # Check if process exists
-        if [ -n "$lock_pid" ] && [ "$lock_pid" -gt 0 ] && ! ps -p "$lock_pid" &>/dev/null; then
-          uds_log "Removing stale lock from non-existent process $lock_pid" "warning"
-          is_stale=true
+        # Check if process exists and is actually a UDS process
+        if [ -n "$lock_pid" ] && [ "$lock_pid" -gt 0 ]; then
+          if ! ps -p "$lock_pid" &>/dev/null; then
+            # Process doesn't exist
+            uds_log "Removing stale lock from non-existent process $lock_pid" "warning"
+            is_stale=true
+          elif ps -p "$lock_pid" -o cmd= 2>/dev/null | grep -q "uds\|BASH_EXECUTION_STRING\|bash.*${UDS_BASE_DIR}"; then
+            # Process exists and is a UDS-related process - check timestamp
+            if [ -n "$lock_time" ] && [ $((current_time - lock_time)) -gt 300 ]; then
+              uds_log "Removing stale lock from UDS process $lock_pid running for >5 minutes" "warning"
+              is_stale=true
+            fi
+          else
+            # Process exists but is not UDS-related
+            uds_log "Removing stale lock from unrelated process $lock_pid" "warning"
+            is_stale=true
+          fi
         # Check if lock is too old (5 minutes)
         elif [ -n "$lock_time" ] && [ $((current_time - lock_time)) -gt 300 ]; then
           uds_log "Removing stale lock created at $(date -d @"$lock_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$lock_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "unknown time")" "warning"
@@ -328,18 +342,17 @@ EOF
   service_entry=$(echo "$service_entry" | jq --argjson history "$version_history" '. + {"version_history": $history, "deployed_at": "'"$registration_time"'"}')
   
   # Create a temporary file for atomic update
-  local temp_registry=""
-  temp_registry=$(mktemp) || {
+  local temp_registry=$(mktemp) || {
     uds_log "Failed to create temporary file for registry update" "error"
     uds_registry_release_lock "write"
     return 1
   }
-  
+
   # Set secure permissions on temp file
   chmod 600 "$temp_registry" || {
     uds_log "Failed to set permissions on temporary registry file" "warning"
   }
-  
+
   # Update the registry data
   local updated_registry=""
   updated_registry=$(echo "$registry_data" | jq --arg name "$app_name" --argjson service "$service_entry" '.services[$name] = $service') || {
@@ -348,7 +361,7 @@ EOF
     uds_registry_release_lock "write"
     return 1
   }
-  
+
   # Write the updated registry to the temporary file
   echo "$updated_registry" > "$temp_registry" || {
     uds_log "Failed to write to temporary registry file" "error"
@@ -356,7 +369,7 @@ EOF
     uds_registry_release_lock "write"
     return 1
   }
-  
+
   # Use atomic move to update the registry file
   if ! mv "$temp_registry" "$UDS_REGISTRY_FILE"; then
     uds_log "Failed to update registry file" "error"
@@ -418,7 +431,7 @@ uds_unregister_service() {
   chmod 600 "$temp_registry" || {
     uds_log "Failed to set permissions on temporary registry file" "warning"
   }
-  
+
   local updated_registry=$(echo "$registry_data" | jq --arg name "$app_name" 'del(.services[$name])')
   echo "$updated_registry" > "$temp_registry" || {
     uds_log "Failed to write to temporary registry file" "error"
@@ -426,7 +439,7 @@ uds_unregister_service() {
     uds_registry_release_lock "write"
     return 1
   }
-  
+
   # Use atomic move to prevent partial writes
   if ! mv "$temp_registry" "$UDS_REGISTRY_FILE"; then
     uds_log "Failed to update registry file" "error"
