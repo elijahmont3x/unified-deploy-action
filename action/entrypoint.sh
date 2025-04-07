@@ -372,7 +372,12 @@ cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
   "telegram_notify_level": "$(get_input "TELEGRAM_NOTIFY_LEVEL" "info")",
   "telegram_include_logs": $(get_input "TELEGRAM_INCLUDE_LOGS" "true" "true"),
   "max_log_lines": "$(get_input "MAX_LOG_LINES" "50")",
-  "auto_rollback": $(get_input "AUTO_ROLLBACK" "true" "true")
+  "auto_rollback": $(get_input "AUTO_ROLLBACK" "true" "true"),
+  "cleanup_images": $(get_input "CLEANUP_IMAGES" "false" "true"),
+  "cleanup_images_age": "$(get_input "CLEANUP_IMAGES_AGE" "168h")",
+  "cleanup_volumes": $(get_input "CLEANUP_VOLUMES" "false" "true"),
+  "cleanup_networks": $(get_input "CLEANUP_NETWORKS" "false" "true"),
+  "preserve_data": "$(get_input "PRESERVE_DATA" "")"
 }
 EOL
 

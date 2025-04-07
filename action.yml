@@ -172,6 +172,25 @@ inputs:
     description: 'Enable automatic rollback on deployment failure'
     required: false
     default: 'true'
+  cleanup-images:
+    description: 'Clean up unused Docker images during cleanup'
+    required: false
+    default: 'false'
+  cleanup-images-age:
+    description: 'Age threshold for image cleanup (e.g., 168h for 1 week)'
+    required: false
+    default: '168h'
+  cleanup-volumes:
+    description: 'Clean up unused Docker volumes during cleanup'
+    required: false
+    default: 'false'
+  cleanup-networks:
+    description: 'Clean up unused Docker networks during cleanup'
+    required: false
+    default: 'false'
+  preserve-data:
+    description: 'Comma-separated list of volume names to preserve during cleanup'
+    required: false
 
 runs:
   using: 'docker'

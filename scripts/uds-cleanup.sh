@@ -91,6 +91,16 @@ uds_parse_args() {
     esac
   done
 
+  # Add support for cleanup-specific parameters
+  CLEANUP_IMAGES="$(get_input "CLEANUP_IMAGES" "false")"
+  CLEANUP_IMAGES_AGE="$(get_input "CLEANUP_IMAGES_AGE" "168h")"
+  CLEANUP_VOLUMES="$(get_input "CLEANUP_VOLUMES" "false")"
+  CLEANUP_NETWORKS="$(get_input "CLEANUP_NETWORKS" "false")"
+  PRESERVE_DATA="$(get_input "PRESERVE_DATA" "")"
+  
+  # Export variables for use in other functions
+  export CLEANUP_IMAGES CLEANUP_IMAGES_AGE CLEANUP_VOLUMES CLEANUP_NETWORKS PRESERVE_DATA
+
   # Validate required parameters
   if [ -z "${CONFIG_FILE:-}" ]; then
     uds_log "Missing required parameter: --config" "error"
@@ -194,6 +204,56 @@ uds_cleanup_application() {
   return 0
 }
 
+# Clean up Docker resources based on parameters
+uds_cleanup_docker_resources() {
+  uds_log "Cleaning up Docker resources" "info"
+  
+  if [ "${DRY_RUN}" = "true" ]; then
+    uds_log "DRY RUN: Would clean up Docker resources" "info"
+    return 0
+  fi
+
+  # Remove old images if enabled
+  if [ "${CLEANUP_IMAGES}" = "true" ]; then
+    uds_log "Removing old Docker images (older than ${CLEANUP_IMAGES_AGE})" "info"
+    docker image prune -af --filter "until=${CLEANUP_IMAGES_AGE}" || {
+      uds_log "Failed to prune Docker images" "warning"
+    }
+  fi
+  
+  # Clean up unused volumes if enabled
+  if [ "${CLEANUP_VOLUMES}" = "true" ]; then
+    uds_log "Cleaning up unused Docker volumes" "info"
+    
+    # Handle preserved volumes
+    if [ -n "${PRESERVE_DATA}" ]; then
+      uds_log "Preserving volumes: ${PRESERVE_DATA}" "info"
+      # Create grep exclusion pattern for preserved volumes
+      local preserve_pattern=$(echo "${PRESERVE_DATA}" | tr ',' '|')
+      # List dangling volumes and exclude preserved ones
+      docker volume ls -qf dangling=true | grep -Ev "${preserve_pattern}" | xargs -r docker volume rm || {
+        uds_log "Failed to prune Docker volumes" "warning"
+      }
+    else
+      # No volumes to preserve, remove all dangling volumes
+      docker volume prune -f || {
+        uds_log "Failed to prune Docker volumes" "warning"
+      }
+    fi
+  fi
+  
+  # Clean up unused networks if enabled
+  if [ "${CLEANUP_NETWORKS}" = "true" ]; then
+    uds_log "Cleaning up unused Docker networks" "info"
+    docker network prune -f || {
+      uds_log "Failed to prune Docker networks" "warning"
+    }
+  fi
+  
+  uds_log "Docker resource cleanup completed" "success"
+  return 0
+}
+
 # Main cleanup function
 uds_do_cleanup() {
   # Parse command-line arguments
@@ -210,6 +270,9 @@ uds_do_cleanup() {
     uds_log "Cleanup failed" "error"
     return 1
   }
+  
+  # Add call to docker resource cleanup function
+  uds_cleanup_docker_resources
   
   return 0
 }
