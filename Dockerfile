@@ -28,7 +28,7 @@ COPY plugins/ /opt/uds/plugins/
 # Make scripts executable
 RUN find /opt/uds/scripts -name "*.sh" -exec chmod +x {} \; && \
     find /opt/uds/plugins -name "*.sh" -exec chmod +x {} \; && \
-    chown -R uds:uds /opt/uds
+    chown -R uds:docker /opt/uds
 
 # Create entrypoint script
 COPY action/entrypoint.sh /entrypoint.sh
