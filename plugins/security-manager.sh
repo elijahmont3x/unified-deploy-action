@@ -5,7 +5,7 @@
 # This plugin implements advanced security measures beyond the core security functions
 
 # Register the plugin
-plugin_register_security_manager() {
+register_plugin() {
   uds_log "Registering Security Manager plugin" "debug"
   
   # Register plugin arguments

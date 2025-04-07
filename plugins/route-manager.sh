@@ -5,7 +5,7 @@
 # This plugin manages routing configurations for deployed applications
 
 # Register the plugin
-plugin_register_route_manager() {
+register_plugin() {
   uds_log "Registering Route Manager plugin" "debug"
   
   # Register plugin arguments

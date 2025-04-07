@@ -5,7 +5,7 @@
 # This plugin handles PostgreSQL database migrations and backups
 
 # Register the plugin
-plugin_register_postgres_manager() {
+register_plugin() {
   uds_log "Registering PostgreSQL Manager plugin" "debug"
   
   # Register plugin arguments

@@ -5,7 +5,7 @@
 # This plugin sends deployment notifications to Telegram
 
 # Register the plugin
-plugin_register_telegram_notifier() {
+register_plugin() {
   uds_log "Registering Telegram Notifier plugin" "debug"
   
   # Register plugin arguments
