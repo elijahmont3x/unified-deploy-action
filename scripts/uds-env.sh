@@ -18,6 +18,16 @@ if [ -z "${UDS_BASE_DIR:-}" ]; then
   UDS_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 
+# Load utility modules with proper error handling
+for util_module in "uds-utils.sh" "uds-config.sh" "uds-args.sh"; do
+  if [ -f "${UDS_BASE_DIR}/${util_module}" ]; then
+    source "${UDS_BASE_DIR}/${util_module}" || {
+      echo "ERROR: Failed to load utility module: ${util_module}"
+      return 1
+    }
+  fi
+done
+
 # Core system constants
 UDS_VERSION="1.1.0"
 UDS_PLUGINS_DIR="${UDS_BASE_DIR}/plugins"

@@ -13,7 +13,10 @@
         "1042",
         "1072",
         "1073",
-        "1009"
+        "1009",
+        "2215",
+        "2188",
+        "2034" // This is for unused variable in the script
     ]
 }
   

@@ -913,7 +913,7 @@ uds_execute_hook() {
       local attempt=1
       local success=false
       
-      while [ $attempt -le $max_attempts ]; do
+      while [ $attempt -le "$max_attempts" ]; do
         # Only show retry message after first attempt
         if [ $attempt -gt 1 ]; then
           uds_log "Retry $attempt/$max_attempts for hook function: $hook_function" "info"
@@ -957,6 +957,7 @@ uds_execute_hook() {
 }
 
 # Get the names of all registered plugins
+# shellcheck disable=SC2120
 uds_list_plugins() {
   local include_details="${1:-false}"
   

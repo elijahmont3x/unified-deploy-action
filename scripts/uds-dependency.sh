@@ -192,6 +192,9 @@ uds_sort_services() {
   local IFS=','
   local sorted_services=()
   local visited=()
+  # Temporary marking array for cycle detection in topological sort
+  # Used via nameref in _uds_topo_sort
+  # shellcheck disable=SC2034
   local temp_mark=()
   
   # Convert comma-separated list to array
@@ -255,6 +258,7 @@ _uds_topo_sort() {
   
   # Mark as permanently visited
   _visited["$service"]=1
+  # shellcheck disable=SC2034
   _temp_mark["$service"]=0
   
   # Add to sorted list
@@ -266,7 +270,7 @@ _uds_topo_sort() {
 # Enhanced health check function for dependencies
 uds_check_service_availability() {
   local service="$1"
-  local timeout="${2:-60}"
+  local timeout="${2:-60}"  # Default timeout is 60s
   local wait_between="${3:-5}"
   local use_cache="${4:-true}"
   
@@ -299,7 +303,19 @@ uds_check_service_availability() {
   local port=$(echo "$service_data" | jq -r '.port // "3000"')
   local health_check=$(echo "$service_data" | jq -r '.health_check // "/health"')
   local health_check_type=$(echo "$service_data" | jq -r '.health_check_type // "auto"')
-  local health_check_timeout=$(echo "$service_data" | jq -r '.health_check_timeout // "30"')
+  
+  # Check if explicit timeout was provided (if $2 is set)
+  if [ -z "$2" ]; then
+    # No explicit timeout provided, check for service-specific value
+    local service_timeout=$(echo "$service_data" | jq -r '.health_check_timeout')
+    if [ -n "$service_timeout" ] && [ "$service_timeout" != "null" ]; then
+      uds_log "Using service-specific health check timeout: ${service_timeout}s" "debug"
+      timeout="$service_timeout"
+    fi
+  fi
+  
+  # Recalculate end time with possibly updated timeout
+  end_time=$((start_time + timeout))
   
   # Progressive backoff for health check intervals
   local check_interval=$wait_between
@@ -367,7 +383,10 @@ uds_check_service_availability() {
 # Clear health check cache
 uds_clear_dependency_health_cache() {
   uds_log "Clearing dependency health check cache" "debug"
-  declare -A UDS_DEPENDENCY_HEALTH_CACHE=()
+  # Clear associative array properly
+  for key in "${!UDS_DEPENDENCY_HEALTH_CACHE[@]}"; do
+    unset "UDS_DEPENDENCY_HEALTH_CACHE[$key]"
+  done
 }
 
 # Check if all dependencies are available with parallel checking
