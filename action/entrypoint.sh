@@ -389,10 +389,16 @@ EOL
 # Add pre-validation step before the jq validation
 log "Pre-validating JSON configuration..." "debug"
 
-# Fix common JSON issues - replace empty values with proper defaults
-cat "$CONFIG_FILE" | tr -d '\r' | sed 's/: ,/: false,/g' > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-cat "$CONFIG_FILE" | tr -d '\r' | sed 's/: }/: false}/g' > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-cat "$CONFIG_FILE" | tr -d '\r' | sed 's/": ""/": null/g' > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+# Use temp files and very basic sed commands without complex regex
+# Fix empty values with simpler commands
+cat "$CONFIG_FILE" | sed 's/: ,/: false,/g' > "${CONFIG_FILE}.tmp"
+mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE" 
+
+cat "$CONFIG_FILE" | sed 's/: }/: false}/g' > "${CONFIG_FILE}.tmp"
+mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+
+cat "$CONFIG_FILE" | sed 's/": ""/": null/g' > "${CONFIG_FILE}.tmp"
+mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
 # Validate the JSON is correct
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
@@ -455,11 +461,16 @@ if [ "$INPUT_COMMAND" = "setup" ]; then
   exit 0
 fi
 
-# Fix path handling for WORKING_DIR to ensure proper slash formatting
+# Fix path handling for WORKING_DIR with a more robust approach
 WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
-# Ensure WORKING_DIR has a leading slash and replace any instances of // with /
-WORKING_DIR="/${WORKING_DIR#/}"
-WORKING_DIR="${WORKING_DIR//\/\//\/}"
+# Normalize path more carefully
+if [[ ! "$WORKING_DIR" = /* ]]; then
+  WORKING_DIR="/$WORKING_DIR"
+fi
+# Ensure the path uses /opt/uds instead of optuds
+if [[ "$WORKING_DIR" = "/optuds" ]]; then
+  WORKING_DIR="/opt/uds"
+fi
 COMMAND="$(get_input "COMMAND" "deploy")"
 
 # Enhanced installation with error handling and proper path handling
@@ -491,8 +502,9 @@ SETUP_CMD+=" rm -rf /tmp/uds-extract /tmp/uds.tar.gz;"
 SETUP_CMD+=" echo 'UDS installation completed successfully';"
 SETUP_CMD+=" fi"  # Removed semicolon here that was causing syntax error
 
-# Create deploy command with absolute path references to avoid path issues
-DEPLOY_CMD="$SETUP_CMD && mkdir -p \"$WORKING_DIR/logs\" && cat > \"$WORKING_DIR/configs/${APP_NAME}_config.json\" && cd \"$WORKING_DIR\" && DEPLOY_HEALTH_CHECK_TIMEOUT=\"$HEALTH_CHECK_TIMEOUT\" \"$WORKING_DIR/scripts/uds-$COMMAND.sh\" --config=\"configs/${APP_NAME}_config.json\""
+# Fix the variable conflict by passing a different variable name with export
+# and removing the direct reference in the command
+DEPLOY_CMD="$SETUP_CMD && mkdir -p \"$WORKING_DIR/logs\" && cat > \"$WORKING_DIR/configs/${APP_NAME}_config.json\" && cd \"$WORKING_DIR\" && export UDS_HEALTH_CHECK_TIMEOUT=\"$(get_input "HEALTH_CHECK_TIMEOUT" "60")\" && \"$WORKING_DIR/scripts/uds-$COMMAND.sh\" --config=\"configs/${APP_NAME}_config.json\""
 
 # Capture deployment output to extract deployment URL and status
 DEPLOY_OUTPUT_FILE=$(mktemp)
