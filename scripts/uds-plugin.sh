@@ -200,10 +200,17 @@ uds_plugin_has_circular_deps() {
 # Helper for checking circular dependencies
 _uds_test_plugin_deps() {
   local plugin="$1"
-  local -n _graph="$2"
-  local -n _visited="$3"
-  local -n _path="$4"
-  local -n _stack="$5"
+  # Pass array references by name, not by reference
+  local graph_name="$2"
+  local visited_name="$3"
+  local path_name="$4"
+  local stack_name="$5"
+  
+  # Use indirect references to avoid circular references
+  local -n _graph="$graph_name"
+  local -n _visited="$visited_name"
+  local -n _path="$path_name"
+  local -n _stack="$stack_name"
   
   # If already in path, we found a cycle
   if [ "${_path[$plugin]:-0}" -eq 1 ]; then

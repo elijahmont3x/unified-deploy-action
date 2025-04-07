@@ -12,8 +12,11 @@ RUN apk add --no-cache \
     rsync \
     ca-certificates
 
-# Create non-root user for better security
-RUN addgroup -S uds && adduser -S uds -G uds
+# Create a non-root user but with Docker group permissions
+RUN addgroup -S docker && \
+    adduser -S uds -G docker && \
+    mkdir -p /opt/uds && \
+    chown -R uds:docker /opt/uds
 
 # Create UDS directory structure
 RUN mkdir -p /opt/uds/scripts /opt/uds/plugins /opt/uds/configs /opt/uds/logs /opt/uds/certs /opt/uds/www

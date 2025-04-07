@@ -143,25 +143,28 @@ sanitize_value() {
   echo "$sanitized"
 }
 
-# Function to get and sanitize input value
+# Function to get and sanitize input value with improved hyphen handling
 get_input() {
   local name="$1"
   local default="$2"
   local is_boolean="${3:-false}"
   local is_expanded="${4:-false}"
   
-  # Handle hyphenated input names
-  local env_name="INPUT_${name}"
-  local env_name_hyphenated="INPUT_${name//_/-}"
+  # Handle hyphenated input names by replacing hyphens with underscores for environment variable names
+  local env_name="INPUT_${name//-/_}"
   
-  # Try to get value from environment variables
+  # Try to get value from environment variable
   local value=""
   if [ -n "${!env_name}" ]; then
     value="${!env_name}"
-  elif [ -n "${!env_name_hyphenated}" ]; then
-    value="${!env_name_hyphenated}"
   else
-    value="$default"
+    # Try alternative format (direct hyphenated version for backward compatibility)
+    local alt_name="INPUT_${name}"
+    if [[ "$name" != *"-"* ]] && [ -n "${!alt_name}" ]; then
+      value="${!alt_name}"
+    else
+      value="$default"
+    fi
   fi
   
   # Handle boolean values specially
@@ -388,9 +391,9 @@ cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
 }
 EOL
 
-# Add pre-validation step before the jq validation
-log "Pre-validating JSON configuration..." "debug"
-# Fix common JSON issues - replace empty values with proper defaults
+# Add pre-validation step before the jq validation${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+log "Pre-validating JSON configuration..." "debug"NFIG_FILE}.tmp" "$CONFIG_FILE"
+# Fix common JSON issues - replace empty values with proper defaultsG_FILE}.tmp" "$CONFIG_FILE"
 sed -i 's/: ,/: false,/g' "$CONFIG_FILE"  # Fix empty boolean fields
 sed -i 's/: }/: false}/g' "$CONFIG_FILE"  # Fix last empty boolean field
 sed -i 's/"\([^"]*\)": ""/"\1": null/g' "$CONFIG_FILE"  # Replace empty strings with null
