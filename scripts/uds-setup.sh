@@ -526,7 +526,7 @@ uds_do_setup() {
   uds_setup_system || {
     uds_log "System setup failed" "error"
     return 1
-  fi
+  }
   
   uds_log "UDS setup completed successfully!" "success"
   return 0
