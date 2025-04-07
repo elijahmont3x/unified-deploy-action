@@ -26,15 +26,27 @@ setup_uds() {
     
     # Attempt to clone the repository
     if [ -n "${GIT_TOKEN:-}" ]; then
-      # Use token if provided
-      local auth_repo="https://${GIT_TOKEN}@github.com/elijahmont3x/unified-deploy-action.git"
-      if ! git clone --branch "$uds_version" "$auth_repo" "$temp_dir" 2>/dev/null; then
+      # Use token with credential helper instead of in URL
+      git config --global credential.helper 'store --file=/tmp/git-credentials'
+      echo "https://${GIT_TOKEN}:x-oauth-basic@github.com" > /tmp/git-credentials
+      chmod 600 /tmp/git-credentials
+      
+      if ! git clone --branch "$uds_version" "$uds_repo" "$temp_dir"; then
         echo "Failed to clone UDS repository with token. Falling back to public URL."
+        
+        # Clean up credentials
+        rm -f /tmp/git-credentials
+        git config --global --unset credential.helper
+        
         if ! git clone --branch "$uds_version" "$uds_repo" "$temp_dir"; then
           echo "Failed to clone UDS repository"
           rm -rf "$temp_dir"
           return 1
         fi
+      else
+        # Clean up credentials on success
+        rm -f /tmp/git-credentials
+        git config --global --unset credential.helper
       fi
     else
       # Try public URL
