@@ -396,6 +396,35 @@ if [ -n "$GITHUB_STEP_SUMMARY" ]; then
   echo "" >> $GITHUB_STEP_SUMMARY
 fi
 
+# Setup command
+if [ "$INPUT_COMMAND" = "setup" ]; then
+  # Create temporary config file
+  echo "Setting up environment..."
+  
+  # Build setup arguments
+  SETUP_ARGS="--config=$CONFIG_FILE"
+  
+  # Add optional parameters if specified
+  if [ "${INPUT_CHECK_SYSTEM}" = "true" ]; then
+    SETUP_ARGS="$SETUP_ARGS --check-system"
+  fi
+  
+  if [ "${INPUT_SECURE_MODE}" = "true" ]; then
+    SETUP_ARGS="$SETUP_ARGS --secure-mode"
+  fi
+  
+  # Add install-deps if specified
+  if [ "${INPUT_INSTALL_DEPS}" = "true" ]; then
+    SETUP_ARGS="$SETUP_ARGS --install-deps"
+  fi
+  
+  # Execute the setup command
+  /opt/uds/scripts/uds-setup.sh $SETUP_ARGS
+  
+  echo "Setup completed successfully."
+  exit 0
+fi
+
 # Prepare commands for the remote server
 WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
 COMMAND="$(get_input "COMMAND" "deploy")"

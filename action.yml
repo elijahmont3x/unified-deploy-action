@@ -110,6 +110,10 @@ inputs:
     description: 'Perform system checks before setup'
     required: false
     default: 'false'
+  install-deps:
+    description: 'Install system dependencies during setup'
+    required: false
+    default: 'false'
   pg-migration-enabled:
     description: 'Enable PostgreSQL migrations'
     required: false
