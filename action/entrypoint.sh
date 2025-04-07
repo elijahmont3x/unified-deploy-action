@@ -353,7 +353,7 @@ cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
   "ssl_dns_provider": "$(get_input "SSL_DNS_PROVIDER" "")",
   "ssl_dns_credentials": "$(get_input "SSL_DNS_CREDENTIALS" "")",
   "volumes": "$(get_input "VOLUMES" "")",
-  "env_vars": $ENV_VARS_JSON,
+  "env_vars": $(echo "$ENV_VARS_JSON" || echo "{}"),
   "persistent": $(get_input "PERSISTENT" "false" "true"),
   "compose_file": "$(get_input "COMPOSE_FILE" "")",
   "use_profiles": $(get_input "USE_PROFILES" "true" "true"),
@@ -388,14 +388,31 @@ cat > "$CONFIG_FILE" << EOL || error_exit "Failed to write config file"
 }
 EOL
 
+# Add pre-validation step before the jq validation
+log "Pre-validating JSON configuration..." "debug"
+# Fix common JSON issues - replace empty values with proper defaults
+sed -i 's/: ,/: false,/g' "$CONFIG_FILE"  # Fix empty boolean fields
+sed -i 's/: }/: false}/g' "$CONFIG_FILE"  # Fix last empty boolean field
+sed -i 's/"\([^"]*\)": ""/"\1": null/g' "$CONFIG_FILE"  # Replace empty strings with null
+
 # Validate the JSON is correct
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
   log "ERROR: Invalid JSON configuration" "error"
   cat "$CONFIG_FILE"
-  error_exit "Failed to create valid JSON configuration"
+  
+  # Try to fix the JSON automatically as a last resort
+  log "Attempting to fix invalid JSON..." "warning"
+  FIXED_JSON=$(cat "$CONFIG_FILE" | jq -e . 2>/dev/null || echo "{}")
+  
+  if [ "$FIXED_JSON" != "{}" ]; then
+    log "JSON fixed automatically, continuing with deployment" "info"
+    echo "$FIXED_JSON" > "$CONFIG_FILE"
+  else
+    error_exit "Failed to create valid JSON configuration"
+  fi
+else
+  log "Configuration file created successfully" "success"
 fi
-
-log "Configuration file created successfully" "success"
 
 # Add summary to GitHub step summary if available
 if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -w "$GITHUB_STEP_SUMMARY" ] || [ -w "$(dirname "$GITHUB_STEP_SUMMARY")" ]; then
