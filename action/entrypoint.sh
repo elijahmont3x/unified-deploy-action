@@ -18,8 +18,8 @@ log() {
   
   echo -e "$(date "+%Y-%m-%d %H:%M:%S") ${color}[${level^^}]${reset} $1"
   
-  # Also log to GITHUB_STEP_SUMMARY if available in GitHub Actions
-  if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+  # Also log to GITHUB_STEP_SUMMARY if available and writable in GitHub Actions
+  if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -w "$GITHUB_STEP_SUMMARY" ] || [ -w "$(dirname "$GITHUB_STEP_SUMMARY")" ]; then
     local github_level_icon=""
     case "$level" in
       info)     github_level_icon="ℹ️" ;;
@@ -29,7 +29,14 @@ log() {
       debug)    github_level_icon="🔍" ;;
       *)        github_level_icon="➡️" ;;
     esac
-    echo "$github_level_icon $(date "+%Y-%m-%d %H:%M:%S") - $1" >> $GITHUB_STEP_SUMMARY
+    
+    # Try to write with error handling
+    {
+      echo "$github_level_icon $(date "+%Y-%m-%d %H:%M:%S") - $1" >> $GITHUB_STEP_SUMMARY
+    } 2>/dev/null || {
+      # If writing fails, log the issue but continue
+      echo "Warning: Could not write to GitHub Step Summary ($GITHUB_STEP_SUMMARY)" >&2
+    }
   fi
 }
 
@@ -391,14 +398,16 @@ fi
 log "Configuration file created successfully" "success"
 
 # Add summary to GitHub step summary if available
-if [ -n "$GITHUB_STEP_SUMMARY" ]; then
-  echo "## 🚀 UDS Deployment" >> $GITHUB_STEP_SUMMARY
-  echo "**Application:** ${APP_NAME}" >> $GITHUB_STEP_SUMMARY
-  echo "**Domain:** ${DOMAIN}" >> $GITHUB_STEP_SUMMARY
-  echo "**Image:** $(get_input "IMAGE" "N/A")" >> $GITHUB_STEP_SUMMARY
-  echo "**Tag:** $(get_input "TAG" "latest")" >> $GITHUB_STEP_SUMMARY
-  echo "**Command:** $(get_input "COMMAND" "deploy")" >> $GITHUB_STEP_SUMMARY
-  echo "" >> $GITHUB_STEP_SUMMARY
+if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -w "$GITHUB_STEP_SUMMARY" ] || [ -w "$(dirname "$GITHUB_STEP_SUMMARY")" ]; then
+  {
+    echo "## 🚀 UDS Deployment" >> $GITHUB_STEP_SUMMARY
+    echo "**Application:** ${APP_NAME}" >> $GITHUB_STEP_SUMMARY
+    echo "**Domain:** ${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+    echo "**Image:** $(get_input "IMAGE" "N/A")" >> $GITHUB_STEP_SUMMARY
+    echo "**Tag:** $(get_input "TAG" "latest")" >> $GITHUB_STEP_SUMMARY
+    echo "**Command:** $(get_input "COMMAND" "deploy")" >> $GITHUB_STEP_SUMMARY
+    echo "" >> $GITHUB_STEP_SUMMARY
+  } 2>/dev/null || echo "Warning: Could not write to GitHub Step Summary" >&2
 fi
 
 # Setup command
@@ -542,15 +551,17 @@ set_output "version" "$(get_input "TAG" "latest")"
 set_output "logs" "$DEPLOY_LOGS"
 
 # Add success message to GitHub step summary if available
-if [ -n "$GITHUB_STEP_SUMMARY" ]; then
-  echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
-  echo "**Deployment URL:** ${DEPLOYMENT_URL}" >> $GITHUB_STEP_SUMMARY
-  echo "**Version:** $(get_input "TAG" "latest")" >> $GITHUB_STEP_SUMMARY
-  echo "" >> $GITHUB_STEP_SUMMARY
-  echo "### Deployment Logs" >> $GITHUB_STEP_SUMMARY
-  echo '```' >> $GITHUB_STEP_SUMMARY
-  echo "$DEPLOY_LOGS" >> $GITHUB_STEP_SUMMARY
-  echo '```' >> $GITHUB_STEP_SUMMARY
+if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -w "$GITHUB_STEP_SUMMARY" ] || [ -w "$(dirname "$GITHUB_STEP_SUMMARY")" ]; then
+  {
+    echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+    echo "**Deployment URL:** ${DEPLOYMENT_URL}" >> $GITHUB_STEP_SUMMARY
+    echo "**Version:** $(get_input "TAG" "latest")" >> $GITHUB_STEP_SUMMARY
+    echo "" >> $GITHUB_STEP_SUMMARY
+    echo "### Deployment Logs" >> $GITHUB_STEP_SUMMARY
+    echo '```' >> $GITHUB_STEP_SUMMARY
+    echo "$DEPLOY_LOGS" >> $GITHUB_STEP_SUMMARY
+    echo '```' >> $GITHUB_STEP_SUMMARY
+  } 2>/dev/null || echo "Warning: Could not write to GitHub Step Summary" >&2
 fi
 
 rm -f "$DEPLOY_OUTPUT_FILE"
