@@ -150,21 +150,16 @@ get_input() {
   local is_boolean="${3:-false}"
   local is_expanded="${4:-false}"
   
-  # Handle hyphenated input names by replacing hyphens with underscores for environment variable names
+  # Create environment variable name by converting hyphens to underscores 
   local env_name="INPUT_${name//-/_}"
   
-  # Try to get value from environment variable
+  # Try to get value from converted environment variable name
   local value=""
   if [ -n "${!env_name}" ]; then
     value="${!env_name}"
   else
-    # Try alternative format (direct hyphenated version for backward compatibility)
-    local alt_name="INPUT_${name}"
-    if [[ "$name" != *"-"* ]] && [ -n "${!alt_name}" ]; then
-      value="${!alt_name}"
-    else
-      value="$default"
-    fi
+    # Fall back to default if not found
+    value="$default"
   fi
   
   # Handle boolean values specially
