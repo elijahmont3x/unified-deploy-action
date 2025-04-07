@@ -16,7 +16,8 @@
         "1009",
         "2215",
         "2188",
-        "2034" // This is for unused variable in the script
+        "2034", // This is for unused variable in the script,
+        "2178", // This is for wront variable type being used incorrectly in the script
     ]
 }
   
