@@ -509,7 +509,7 @@ uds_do_setup() {
   uds_load_config "$CONFIG_FILE" || {
     uds_log "Failed to load configuration from ${CONFIG_FILE}" "error"
     return 1
-  fi
+  }
   
   # Execute hook after configuration is loaded
   uds_execute_hook "config_loaded" "$APP_NAME"
