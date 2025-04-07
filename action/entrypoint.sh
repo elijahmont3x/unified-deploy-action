@@ -390,9 +390,9 @@ EOL
 log "Pre-validating JSON configuration..." "debug"
 
 # Fix common JSON issues - replace empty values with proper defaults
-sed 's/: ,/: false,/g' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-sed 's/: }/: false}/g' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-sed 's/"\([^"]*\)": ""/"\1": null/g' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+cat "$CONFIG_FILE" | tr -d '\r' | sed 's/: ,/: false,/g' > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+cat "$CONFIG_FILE" | tr -d '\r' | sed 's/: }/: false}/g' > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+cat "$CONFIG_FILE" | tr -d '\r' | sed 's/": ""/": null/g' > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
 # Validate the JSON is correct
 if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
@@ -457,10 +457,9 @@ fi
 
 # Fix path handling for WORKING_DIR to ensure proper slash formatting
 WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
-# Ensure WORKING_DIR has a leading slash if not present
-if [[ ! "$WORKING_DIR" == /* ]]; then
-  WORKING_DIR="/$WORKING_DIR"
-fi
+# Ensure WORKING_DIR has a leading slash and replace any instances of // with /
+WORKING_DIR="/${WORKING_DIR#/}"
+WORKING_DIR="${WORKING_DIR//\/\//\/}"
 COMMAND="$(get_input "COMMAND" "deploy")"
 
 # Enhanced installation with error handling and proper path handling
@@ -493,7 +492,7 @@ SETUP_CMD+=" echo 'UDS installation completed successfully';"
 SETUP_CMD+=" fi"  # Removed semicolon here that was causing syntax error
 
 # Create deploy command with absolute path references to avoid path issues
-DEPLOY_CMD="$SETUP_CMD && mkdir -p \"$WORKING_DIR/logs\" && cat > \"$WORKING_DIR/configs/${APP_NAME}_config.json\" && cd \"$WORKING_DIR\" && \"$WORKING_DIR/scripts/uds-$COMMAND.sh\" --config=\"configs/${APP_NAME}_config.json\""
+DEPLOY_CMD="$SETUP_CMD && mkdir -p \"$WORKING_DIR/logs\" && cat > \"$WORKING_DIR/configs/${APP_NAME}_config.json\" && cd \"$WORKING_DIR\" && DEPLOY_HEALTH_CHECK_TIMEOUT=\"$HEALTH_CHECK_TIMEOUT\" \"$WORKING_DIR/scripts/uds-$COMMAND.sh\" --config=\"configs/${APP_NAME}_config.json\""
 
 # Capture deployment output to extract deployment URL and status
 DEPLOY_OUTPUT_FILE=$(mktemp)
