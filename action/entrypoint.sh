@@ -455,13 +455,17 @@ if [ "$INPUT_COMMAND" = "setup" ]; then
   exit 0
 fi
 
-# Fix path handling in WORKING_DIR 
+# Fix path handling for WORKING_DIR to ensure proper slash formatting
 WORKING_DIR="$(get_input "WORKING_DIR" "/opt/uds")"
+# Ensure WORKING_DIR has a leading slash if not present
+if [[ ! "$WORKING_DIR" == /* ]]; then
+  WORKING_DIR="/$WORKING_DIR"
+fi
 COMMAND="$(get_input "COMMAND" "deploy")"
 
-# Enhanced installation with error handling and progress tracking
-SETUP_CMD="set -e; mkdir -p $WORKING_DIR/configs $WORKING_DIR/scripts $WORKING_DIR/plugins"
-SETUP_CMD+=" && if [ ! -f $WORKING_DIR/scripts/uds-deploy.sh ]; then"
+# Enhanced installation with error handling and proper path handling
+SETUP_CMD="set -e; mkdir -p \"$WORKING_DIR/configs\" \"$WORKING_DIR/scripts\" \"$WORKING_DIR/plugins\""
+SETUP_CMD+=" && if [ ! -f \"$WORKING_DIR/scripts/uds-deploy.sh\" ]; then"
 SETUP_CMD+=" echo 'Installing UDS scripts...';"
 
 # Download with better error handling
@@ -488,8 +492,8 @@ SETUP_CMD+=" rm -rf /tmp/uds-extract /tmp/uds.tar.gz;"
 SETUP_CMD+=" echo 'UDS installation completed successfully';"
 SETUP_CMD+=" fi"  # Removed semicolon here that was causing syntax error
 
-# Create deploy command with better path handling
-DEPLOY_CMD="$SETUP_CMD && mkdir -p $WORKING_DIR/logs && cat > $WORKING_DIR/configs/${APP_NAME}_config.json && cd $WORKING_DIR && $WORKING_DIR/scripts/uds-$COMMAND.sh --config=configs/${APP_NAME}_config.json"
+# Create deploy command with absolute path references to avoid path issues
+DEPLOY_CMD="$SETUP_CMD && mkdir -p \"$WORKING_DIR/logs\" && cat > \"$WORKING_DIR/configs/${APP_NAME}_config.json\" && cd \"$WORKING_DIR\" && \"$WORKING_DIR/scripts/uds-$COMMAND.sh\" --config=\"configs/${APP_NAME}_config.json\""
 
 # Capture deployment output to extract deployment URL and status
 DEPLOY_OUTPUT_FILE=$(mktemp)
