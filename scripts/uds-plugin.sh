@@ -381,7 +381,7 @@ uds_activate_plugins() {
     # Activate in the order specified by the user, skipping plugins involved in circles
     IFS=',' read -ra PLUGIN_ARRAY <<< "$valid_plugins"
     
-    for plugin in "${PLUGIN_ARRAY[@]}"]; do
+    for plugin in "${PLUGIN_ARRAY[@]}"; do
       # Skip plugins involved in circular dependencies
       if [ -n "${UDS_CIRCULAR_DEPENDENCY_DETAIL[$plugin]:-}" ]; then
         uds_log "Skipping plugin in circular dependency: $plugin" "warning"
