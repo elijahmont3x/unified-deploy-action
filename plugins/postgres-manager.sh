@@ -173,7 +173,7 @@ plugin_pg_migrate() {
         container=$(docker ps -q --filter "name=${app_name}-" | head -n1)
       fi
       
-      if ( -n "$container" ]; then
+      if [ -n "$container" ]; then
         # Try to detect migration tool
         if docker exec "$container" sh -c "command -v npm" &>/dev/null; then
           uds_log "Detected Node.js environment, running migrations" "info"

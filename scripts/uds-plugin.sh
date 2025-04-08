@@ -68,6 +68,10 @@ uds_discover_plugins() {
     local plugin_name=$(basename "$plugin_file" .sh)
     local register_func="plugin_register_${plugin_name//-/_}"
     
+    # Add debug output
+    uds_log "Looking for registration function: $register_func in plugin $(basename $plugin_file)" "debug"
+    declare -F | grep -q "$register_func" && uds_log "Found function!" "debug" || uds_log "Function not found" "debug"
+    
     # Check if registration function exists and call it
     if declare -f "$register_func" > /dev/null; then
       uds_log "Registering plugin: $plugin_name" "debug"
@@ -377,7 +381,7 @@ uds_activate_plugins() {
     # Activate in the order specified by the user, skipping plugins involved in circles
     IFS=',' read -ra PLUGIN_ARRAY <<< "$valid_plugins"
     
-    for plugin in "${PLUGIN_ARRAY[@]}"; do
+    for plugin in "${PLUGIN_ARRAY[@]}"]; do
       # Skip plugins involved in circular dependencies
       if [ -n "${UDS_CIRCULAR_DEPENDENCY_DETAIL[$plugin]:-}" ]; then
         uds_log "Skipping plugin in circular dependency: $plugin" "warning"
