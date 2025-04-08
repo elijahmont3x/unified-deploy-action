@@ -4,8 +4,8 @@
 #
 # This plugin handles PostgreSQL database migrations and backups
 
-# Register the plugin
-register_plugin() {
+# Register the plugin - using the correct function name pattern that UDS expects
+plugin_register_postgres_manager() {
   uds_log "Registering PostgreSQL Manager plugin" "debug"
   
   # Register plugin arguments
@@ -173,7 +173,7 @@ plugin_pg_migrate() {
         container=$(docker ps -q --filter "name=${app_name}-" | head -n1)
       fi
       
-      if [ -n "$container" ]; then
+      if ( -n "$container" ]; then
         # Try to detect migration tool
         if docker exec "$container" sh -c "command -v npm" &>/dev/null; then
           uds_log "Detected Node.js environment, running migrations" "info"
@@ -204,3 +204,8 @@ plugin_pg_migrate() {
   uds_log "Migrations completed successfully" "success"
   return 0
 }
+
+# Export functions for UDS to use
+export -f plugin_register_postgres_manager plugin_activate_postgres_manager 
+export -f plugin_pg_parse_connection plugin_pg_backup 
+export -f plugin_pg_prepare plugin_pg_migrate

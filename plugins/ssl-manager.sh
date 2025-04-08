@@ -5,7 +5,7 @@
 # This plugin handles SSL certificate generation and renewal using Let's Encrypt
 
 # Register the plugin
-register_plugin() {
+plugin_register_ssl_manager() {
   uds_log "Registering SSL Manager plugin" "debug"
   
   # Register plugin arguments

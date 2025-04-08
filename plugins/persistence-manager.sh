@@ -5,7 +5,7 @@
 # This plugin manages persistent services like databases that should persist across deployments
 
 # Register the plugin
-register_plugin() {
+plugin_register_perregister_pluginsistence_manager() {
   uds_log "Registering Persistence Manager plugin" "debug"
   
   # Register plugin arguments

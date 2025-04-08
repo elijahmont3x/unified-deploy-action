@@ -10,7 +10,7 @@ if [ -f "$(dirname "${BASH_SOURCE[0]}")/../scripts/uds-health.sh" ]; then
 fi
 
 # Register the plugin
-register_plugin() {
+plugin_register_redis_manager() {
   uds_log "Registering Redis Manager plugin" "debug"
   
   # Register plugin arguments
